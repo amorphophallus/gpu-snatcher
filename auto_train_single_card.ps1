@@ -3,7 +3,7 @@ param(
     [double]$MemoryUsageThreshold = 0.1,
     [int]$ConnectTimeoutSeconds = 5,
     [int]$PollIntervalSeconds = 5,
-    [int]$PollTimeoutSeconds = 300,
+    [int]$PollTimeoutSeconds = 900,
     [string]$RemoteProjectDir = "/mnt/nas/share/home/hy/robust-rearrangement-custom",
     [string]$RemoteCondaEnv = "rr"
 )
