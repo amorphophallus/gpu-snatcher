@@ -8,7 +8,8 @@ SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.1}"
 CONNECT_TIMEOUT_SECONDS="${CONNECT_TIMEOUT_SECONDS:-5}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
-POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-900}"
+POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-300}"
+SSH_COMMAND_TIMEOUT_SECONDS="${SSH_COMMAND_TIMEOUT_SECONDS:-15}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/mnt/nas/share/home/hy/robust-rearrangement-custom}"
 REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-rr}"
 
@@ -50,11 +51,24 @@ invoke_ssh() {
     local host_alias="$1"
     local remote_command="$2"
 
-    ssh \
-        -o BatchMode=yes \
-        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        "$host_alias" \
-        "$remote_command"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${SSH_COMMAND_TIMEOUT_SECONDS}s" \
+            ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=1 \
+            "$host_alias" \
+            "$remote_command"
+    else
+        ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=1 \
+            "$host_alias" \
+            "$remote_command"
+    fi
 }
 
 find_first_free_gpu() {
@@ -330,7 +344,32 @@ main() {
     local pane_output=""
 
     while true; do
+        if (( $(date +%s) - start_time >= POLL_TIMEOUT_SECONDS )); then
+            printf 'status: timeout\n'
+            printf 'server: %s\n' "$host_alias"
+            printf 'gpu_id: %s\n' "$gpu_id"
+            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
+            printf 'tmux_name: %s\n' "$session_name"
+            printf 'command_name: %s\n' "$command_name"
+            printf 'wandb_run_name: -\n'
+            printf 'error_reason: Timed out waiting for wandb run name\n'
+            exit 1
+        fi
+
         sleep "$POLL_INTERVAL_SECONDS"
+
+        if (( $(date +%s) - start_time >= POLL_TIMEOUT_SECONDS )); then
+            printf 'status: timeout\n'
+            printf 'server: %s\n' "$host_alias"
+            printf 'gpu_id: %s\n' "$gpu_id"
+            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
+            printf 'tmux_name: %s\n' "$session_name"
+            printf 'command_name: %s\n' "$command_name"
+            printf 'wandb_run_name: -\n'
+            printf 'error_reason: Timed out waiting for wandb run name\n'
+            exit 1
+        fi
+
         if ! pane_output="$(capture_tmux_output "$host_alias" "$session_name" 2>&1)"; then
             echo "Failed to capture tmux output from $host_alias:$session_name" >&2
             echo "$pane_output" >&2

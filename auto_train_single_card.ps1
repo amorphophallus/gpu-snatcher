@@ -3,7 +3,8 @@ param(
     [double]$MemoryUsageThreshold = 0.1,
     [int]$ConnectTimeoutSeconds = 5,
     [int]$PollIntervalSeconds = 5,
-    [int]$PollTimeoutSeconds = 900,
+    [int]$PollTimeoutSeconds = 300,
+    [int]$SshCommandTimeoutSeconds = 15,
     [string]$RemoteProjectDir = "/mnt/nas/share/home/hy/robust-rearrangement-custom",
     [string]$RemoteCondaEnv = "rr"
 )
@@ -11,7 +12,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.num_epochs=4000 wandb.project=multi-task-rgbd-skill-low training.gpu_id=6 randomness=low dryrun=false wandb.continue_run_id=e56mvprj"
+$global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.num_epochs=4000 wandb.project=multi-task-rgbd-skill-low training.gpu_id=5 randomness=low dryrun=false wandb.continue_run_id=88o88q4r"
 $sessionNameCandidates = @(
     "atlas",
     "birch",
@@ -60,21 +61,77 @@ function Get-ZjuHostsFromSshConfig {
 function Invoke-SshCommand {
     param(
         [string]$HostAlias,
-        [string]$RemoteCommand
+        [string]$RemoteCommand,
+        [int]$CommandTimeoutSeconds = $SshCommandTimeoutSeconds
     )
 
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'ServerAliveInterval=5',
+        '-o', 'ServerAliveCountMax=1',
         $HostAlias,
         $RemoteCommand
     )
 
-    $output = & ssh @sshArgs 2>&1
-    return [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
-        Output   = ($output | Out-String).TrimEnd()
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "ssh"
+    $psi.Arguments = ($sshArgs | ForEach-Object {
+        if ($_ -match '\s|"') {
+            '"' + ($_ -replace '"', '\"') + '"'
+        } else {
+            $_
+        }
+    }) -join ' '
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    [void]$process.Start()
+
+    if (-not $process.WaitForExit($CommandTimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch {}
+        return [pscustomobject]@{
+            ExitCode = 124
+            Output   = "SSH command timed out after $CommandTimeoutSeconds seconds."
+        }
     }
+
+    $stdOut = $process.StandardOutput.ReadToEnd()
+    $stdErr = $process.StandardError.ReadToEnd()
+    $output = ($stdOut + $stdErr).TrimEnd()
+
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        Output   = $output
+    }
+}
+
+function Write-StructuredStatusAndExit {
+    param(
+        [string]$Status,
+        [string]$Server,
+        [int]$GpuId,
+        [double]$GpuUtil,
+        [string]$TmuxName,
+        [string]$CommandName,
+        [string]$WandbRunName,
+        [string]$ErrorReason,
+        [int]$ExitCode
+    )
+
+    Write-Host "status: $Status"
+    Write-Host "server: $Server"
+    Write-Host "gpu_id: $GpuId"
+    Write-Host "gpu_util: $([math]::Round($GpuUtil, 0))"
+    Write-Host "tmux_name: $TmuxName"
+    Write-Host "command_name: $CommandName"
+    Write-Host "wandb_run_name: $WandbRunName"
+    Write-Host "error_reason: $ErrorReason"
+    exit $ExitCode
 }
 
 function Get-FirstFreeGpu {
@@ -333,10 +390,54 @@ $failureReason = $null
 $lastPaneOutput = ""
 
 while (-not $wandbRunName) {
+    $elapsedSeconds = ((Get-Date) - $startTime).TotalSeconds
+    if ($elapsedSeconds -ge $PollTimeoutSeconds) {
+        Write-StructuredStatusAndExit `
+            -Status "timeout" `
+            -Server $selection.HostAlias `
+            -GpuId $selection.GpuId `
+            -GpuUtil $selection.GpuUtil `
+            -TmuxName $sessionName `
+            -CommandName $commandName `
+            -WandbRunName "-" `
+            -ErrorReason "Timed out waiting for wandb run name" `
+            -ExitCode 1
+    }
+
     Start-Sleep -Seconds $PollIntervalSeconds
 
-    $paneResult = Get-TmuxPaneOutput -HostAlias $selection.HostAlias -SessionName $sessionName
+    $elapsedSeconds = ((Get-Date) - $startTime).TotalSeconds
+    if ($elapsedSeconds -ge $PollTimeoutSeconds) {
+        Write-StructuredStatusAndExit `
+            -Status "timeout" `
+            -Server $selection.HostAlias `
+            -GpuId $selection.GpuId `
+            -GpuUtil $selection.GpuUtil `
+            -TmuxName $sessionName `
+            -CommandName $commandName `
+            -WandbRunName "-" `
+            -ErrorReason "Timed out waiting for wandb run name" `
+            -ExitCode 1
+    }
+
+    $remainingSeconds = [math]::Ceiling($PollTimeoutSeconds - $elapsedSeconds)
+    $commandTimeoutSeconds = [math]::Max(1, [math]::Min($SshCommandTimeoutSeconds, $remainingSeconds))
+    $paneResult = Invoke-SshCommand -HostAlias $selection.HostAlias -RemoteCommand "tmux capture-pane -pt '$sessionName:train' -S -200" -CommandTimeoutSeconds $commandTimeoutSeconds
     if ($paneResult.ExitCode -ne 0) {
+        $elapsedSeconds = ((Get-Date) - $startTime).TotalSeconds
+        if ($paneResult.ExitCode -eq 124 -or $elapsedSeconds -ge $PollTimeoutSeconds) {
+            Write-StructuredStatusAndExit `
+                -Status "timeout" `
+                -Server $selection.HostAlias `
+                -GpuId $selection.GpuId `
+                -GpuUtil $selection.GpuUtil `
+                -TmuxName $sessionName `
+                -CommandName $commandName `
+                -WandbRunName "-" `
+                -ErrorReason "Timed out while waiting for tmux output" `
+                -ExitCode 1
+        }
+
         throw "Failed to capture tmux output from $($selection.HostAlias):$sessionName : $($paneResult.Output)"
     }
 
@@ -349,27 +450,16 @@ while (-not $wandbRunName) {
     }
 
     if ($failureReason) {
-        Write-Host "status: failed"
-        Write-Host "server: $($selection.HostAlias)"
-        Write-Host "gpu_id: $($selection.GpuId)"
-        Write-Host "gpu_util: $([math]::Round($selection.GpuUtil, 0))"
-        Write-Host "tmux_name: $sessionName"
-        Write-Host "command_name: $commandName"
-        Write-Host "wandb_run_name: -"
-        Write-Host "error_reason: $failureReason"
-        exit 1
-    }
-
-    if (((Get-Date) - $startTime).TotalSeconds -ge $PollTimeoutSeconds) {
-        Write-Host "status: timeout"
-        Write-Host "server: $($selection.HostAlias)"
-        Write-Host "gpu_id: $($selection.GpuId)"
-        Write-Host "gpu_util: $([math]::Round($selection.GpuUtil, 0))"
-        Write-Host "tmux_name: $sessionName"
-        Write-Host "command_name: $commandName"
-        Write-Host "wandb_run_name: -"
-        Write-Host "error_reason: Timed out waiting for wandb run name"
-        exit 1
+        Write-StructuredStatusAndExit `
+            -Status "failed" `
+            -Server $selection.HostAlias `
+            -GpuId $selection.GpuId `
+            -GpuUtil $selection.GpuUtil `
+            -TmuxName $sessionName `
+            -CommandName $commandName `
+            -WandbRunName "-" `
+            -ErrorReason $failureReason `
+            -ExitCode 1
     }
 }
 
