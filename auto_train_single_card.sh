@@ -5,7 +5,7 @@ set -euo pipefail
 TRAIN_COMMAND=""
 
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
-MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.2}"
+MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.1}"
 CONNECT_TIMEOUT_SECONDS="${CONNECT_TIMEOUT_SECONDS:-5}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-300}"
@@ -61,40 +61,49 @@ find_first_free_gpu() {
     local host_alias
     local output
     local line
+    local candidate
+    local candidates=()
 
     while IFS= read -r host_alias; do
         [[ -z "$host_alias" ]] && continue
         if ! output="$(invoke_ssh "$host_alias" \
-            "nvidia-smi --query-gpu=index,memory.total,memory.used --format=csv,noheader,nounits" 2>&1)"; then
+            "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"; then
             continue
         fi
 
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if python3 - "$host_alias" "$MEMORY_USAGE_THRESHOLD" "$line" <<'PY'
+            if candidate="$(python3 - "$host_alias" "$MEMORY_USAGE_THRESHOLD" "$line" <<'PY'
 import sys
 
 host = sys.argv[1]
 threshold = float(sys.argv[2])
 line = sys.argv[3]
 parts = [p.strip() for p in line.split(",")]
-if len(parts) < 3:
+if len(parts) < 4:
     sys.exit(0)
 
 gpu_id = int(parts[0])
 memory_total = float(parts[1])
 memory_used = float(parts[2])
+gpu_util = float(parts[3])
 usage_ratio = memory_used / memory_total if memory_total > 0 else 1.0
 
 if usage_ratio < threshold:
-    print(f"{host}|{gpu_id}")
+    print(f"{host}|{gpu_id}|{gpu_util}|{memory_used}")
     sys.exit(0)
 sys.exit(1)
 PY
-                return 0
+            )"; then
+                candidates+=("$candidate")
             fi
         done <<< "$output"
     done < <(get_hosts_from_ssh_config)
+
+    if [[ ${#candidates[@]} -gt 0 ]]; then
+        printf '%s\n' "${candidates[@]}" | sort -t'|' -k3,3n -k4,4n -k1,1 -k2,2n | head -n 1
+        return 0
+    fi
 
     return 1
 }
@@ -300,8 +309,8 @@ main() {
         exit 1
     fi
 
-    local host_alias="${selected%%|*}"
-    local gpu_id="${selected##*|}"
+    local host_alias gpu_id gpu_util
+    IFS='|' read -r host_alias gpu_id gpu_util _ <<< "$selected"
     local prepared_command
     prepared_command="$(prepare_train_command "$gpu_id")"
     local command_name
@@ -336,6 +345,7 @@ main() {
             printf 'status: failed\n'
             printf 'server: %s\n' "$host_alias"
             printf 'gpu_id: %s\n' "$gpu_id"
+            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
             printf 'tmux_name: %s\n' "$session_name"
             printf 'command_name: %s\n' "$command_name"
             printf 'wandb_run_name: -\n'
@@ -347,6 +357,7 @@ main() {
             printf 'status: timeout\n'
             printf 'server: %s\n' "$host_alias"
             printf 'gpu_id: %s\n' "$gpu_id"
+            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
             printf 'tmux_name: %s\n' "$session_name"
             printf 'command_name: %s\n' "$command_name"
             printf 'wandb_run_name: -\n'
@@ -358,6 +369,7 @@ main() {
     printf 'status: started\n'
     printf 'server: %s\n' "$host_alias"
     printf 'gpu_id: %s\n' "$gpu_id"
+    printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
     printf 'tmux_name: %s\n' "$session_name"
     printf 'command_name: %s\n' "$command_name"
     printf 'wandb_run_name: %s\n' "$wandb_run_name"

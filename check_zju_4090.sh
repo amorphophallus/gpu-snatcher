@@ -3,7 +3,7 @@
 set -uo pipefail
 
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
-MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.2}"
+MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.1}"
 CONNECT_TIMEOUT_SECONDS="${CONNECT_TIMEOUT_SECONDS:-5}"
 
 get_hosts_from_ssh_config() {
@@ -32,7 +32,7 @@ check_host() {
     query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         -o StrictHostKeyChecking=accept-new \
         "$host_alias" \
-        "nvidia-smi --query-gpu=index,memory.total,memory.used --format=csv,noheader,nounits" 2>&1)"
+        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
     ssh_status=$?
 
     if [[ $ssh_status -ne 0 ]]; then
@@ -50,18 +50,19 @@ host = sys.argv[1]
 threshold = float(sys.argv[2])
 line = sys.argv[3]
 parts = [p.strip() for p in line.split(",")]
-if len(parts) < 3:
+if len(parts) < 4:
     sys.exit(0)
 
 index = int(parts[0])
 memory_total = float(parts[1])
 memory_used = float(parts[2])
+gpu_util = float(parts[3])
 usage_ratio = memory_used / memory_total if memory_total > 0 else 1.0
 usage_percent = round(usage_ratio * 100, 1)
 status = "FREE" if usage_ratio < threshold else "BUSY"
 
 print(
-    f"GPU|{host}|{index}|{status}|{int(round(memory_used))}|{int(round(memory_total))}|{usage_percent}"
+    f"GPU|{host}|{index}|{status}|{int(round(memory_used))}|{int(round(memory_total))}|{usage_percent}|{int(round(gpu_util))}"
 )
 PY
     done <<< "$query_output"
@@ -101,11 +102,12 @@ main() {
                 local used_mib="$field3"
                 local total_mib="$field4"
                 local usage_percent="$field5"
+                local gpu_util="$field6"
                 local gpu_row
 
                 host_total_count["$row_host"]=$(( ${host_total_count["$row_host"]} + 1 ))
-                printf -v gpu_row '%-4s %-6s %-10s %-10s %-7s\n' \
-                    "$gpu_index" "$gpu_status" "$used_mib" "$total_mib" "$usage_percent"
+                printf -v gpu_row '%-4s %-6s %-10s %-10s %-10s %-8s\n' \
+                    "$gpu_index" "$gpu_status" "$used_mib" "$total_mib" "$usage_percent" "$gpu_util"
                 gpu_rows["$row_host"]+="$gpu_row"
 
                 if [[ "$gpu_status" == "FREE" ]]; then
@@ -113,7 +115,7 @@ main() {
                     if [[ -n "${host_free_ids["$row_host"]}" ]]; then
                         host_free_ids["$row_host"]+=", "
                     fi
-                    host_free_ids["$row_host"]+="$gpu_index"
+                    host_free_ids["$row_host"]+="GPU${gpu_index}(${gpu_util}%)"
                 fi
             fi
         done < <(check_host "$host")
@@ -155,7 +157,7 @@ main() {
         fi
 
         echo "[$host] ${host_free_count["$host"]}/${host_total_count["$host"]} GPUs free"
-        printf '%-4s %-6s %-10s %-10s %-7s\n' "GPU" "Status" "Used(MiB)" "Total(MiB)" "Usage%"
+        printf '%-4s %-6s %-10s %-10s %-10s %-8s\n' "GPU" "Status" "Used(MiB)" "Total(MiB)" "MemUsage%" "GpuUtil%"
         printf '%s' "${gpu_rows["$host"]}"
     done
 

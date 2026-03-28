@@ -1,6 +1,6 @@
 param(
     [string]$SshConfigPath = "$HOME/.ssh/config",
-    [double]$MemoryUsageThreshold = 0.2,
+    [double]$MemoryUsageThreshold = 0.1,
     [int]$ConnectTimeoutSeconds = 5,
     [int]$PollIntervalSeconds = 5,
     [int]$PollTimeoutSeconds = 300,
@@ -78,9 +78,11 @@ function Invoke-SshCommand {
 }
 
 function Get-FirstFreeGpu {
+    $candidates = @()
+
     foreach ($hostAlias in (Get-ZjuHostsFromSshConfig -Path $SshConfigPath)) {
         $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand `
-            'nvidia-smi --query-gpu=index,memory.total,memory.used --format=csv,noheader,nounits'
+            'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
 
         if ($result.ExitCode -ne 0) {
             continue
@@ -92,22 +94,29 @@ function Get-FirstFreeGpu {
             }
 
             $parts = $line -split '\s*,\s*'
-            if ($parts.Count -lt 3) {
+            if ($parts.Count -lt 4) {
                 continue
             }
 
             $gpuId = [int]$parts[0]
             $memoryTotal = [double]$parts[1]
             $memoryUsed = [double]$parts[2]
+            $gpuUtil = [double]$parts[3]
             $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
 
             if ($usageRatio -lt $MemoryUsageThreshold) {
-                return [pscustomobject]@{
+                $candidates += [pscustomobject]@{
                     HostAlias = $hostAlias
                     GpuId     = $gpuId
+                    GpuUtil   = $gpuUtil
+                    MemoryUsed = $memoryUsed
                 }
             }
         }
+    }
+
+    if ($candidates.Count -gt 0) {
+        return $candidates | Sort-Object GpuUtil, MemoryUsed, HostAlias, GpuId | Select-Object -First 1
     }
 
     throw "No reachable free GPU found."
@@ -343,6 +352,7 @@ while (-not $wandbRunName) {
         Write-Host "status: failed"
         Write-Host "server: $($selection.HostAlias)"
         Write-Host "gpu_id: $($selection.GpuId)"
+        Write-Host "gpu_util: $([math]::Round($selection.GpuUtil, 0))"
         Write-Host "tmux_name: $sessionName"
         Write-Host "command_name: $commandName"
         Write-Host "wandb_run_name: -"
@@ -354,6 +364,7 @@ while (-not $wandbRunName) {
         Write-Host "status: timeout"
         Write-Host "server: $($selection.HostAlias)"
         Write-Host "gpu_id: $($selection.GpuId)"
+        Write-Host "gpu_util: $([math]::Round($selection.GpuUtil, 0))"
         Write-Host "tmux_name: $sessionName"
         Write-Host "command_name: $commandName"
         Write-Host "wandb_run_name: -"
@@ -365,6 +376,7 @@ while (-not $wandbRunName) {
 Write-Host "status: started"
 Write-Host "server: $($selection.HostAlias)"
 Write-Host "gpu_id: $($selection.GpuId)"
+Write-Host "gpu_util: $([math]::Round($selection.GpuUtil, 0))"
 Write-Host "tmux_name: $sessionName"
 Write-Host "command_name: $commandName"
 Write-Host "wandb_run_name: $wandbRunName"

@@ -1,6 +1,6 @@
 param(
     [string]$SshConfigPath = "$HOME/.ssh/config",
-    [double]$MemoryUsageThreshold = 0.2,
+    [double]$MemoryUsageThreshold = 0.1,
     [int]$ConnectTimeoutSeconds = 5
 )
 
@@ -66,7 +66,7 @@ function Get-HostGpuStatus {
         [int]$TimeoutSeconds
     )
 
-    $query = 'nvidia-smi --query-gpu=index,memory.total,memory.used --format=csv,noheader,nounits'
+    $query = 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
     $result = Invoke-SshCommand -HostAlias $HostAlias -RemoteCommand $query -TimeoutSeconds $TimeoutSeconds
 
     if ($result.ExitCode -ne 0) {
@@ -87,13 +87,14 @@ function Get-HostGpuStatus {
         }
 
         $parts = $line -split '\s*,\s*'
-        if ($parts.Count -lt 3) {
+        if ($parts.Count -lt 4) {
             continue
         }
 
         $index = [int]$parts[0]
         $memoryTotal = [double]$parts[1]
         $memoryUsed = [double]$parts[2]
+        $gpuUtil = [double]$parts[3]
         $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
         $available = $usageRatio -lt $Threshold
 
@@ -102,6 +103,7 @@ function Get-HostGpuStatus {
             MemoryTotal  = [math]::Round($memoryTotal, 0)
             MemoryUsed   = [math]::Round($memoryUsed, 0)
             UsagePercent = [math]::Round($usageRatio * 100, 1)
+            GpuUtil      = [math]::Round($gpuUtil, 0)
             Available    = $available
             Status       = if ($available) { "FREE" } else { "BUSY" }
         }
@@ -140,7 +142,7 @@ foreach ($hostAlias in $hosts) {
 
 $summaryRows = foreach ($item in $results) {
     $freeList = if ($item.Reachable -and $item.Gpus.Count -gt 0) {
-        (($item.Gpus | Where-Object Available | ForEach-Object { $_.Index }) -join ', ')
+        (($item.Gpus | Where-Object Available | ForEach-Object { "GPU{0}({1}%)" -f $_.Index, $_.GpuUtil }) -join ', ')
     } else {
         ''
     }
@@ -177,7 +179,8 @@ foreach ($item in $results) {
             @{Name='Status'; Expression = { $_.Status }}, `
             @{Name='Used(MiB)'; Expression = { $_.MemoryUsed }}, `
             @{Name='Total(MiB)'; Expression = { $_.MemoryTotal }}, `
-            @{Name='Usage%'; Expression = { $_.UsagePercent }} |
+            @{Name='MemUsage%'; Expression = { $_.UsagePercent }}, `
+            @{Name='GpuUtil%'; Expression = { $_.GpuUtil }} |
         Format-Table -AutoSize
 }
 
@@ -188,7 +191,7 @@ if ($usable.Count -eq 0) {
     Write-Host "No currently usable GPUs found." -ForegroundColor Yellow
 } else {
     foreach ($item in $usable) {
-        $freeIds = ($item.Gpus | Where-Object Available | ForEach-Object { $_.Index }) -join ', '
-        Write-Host "$($item.Host): GPU $freeIds"
+        $freeIds = ($item.Gpus | Where-Object Available | Sort-Object GpuUtil, Index | ForEach-Object { "GPU{0}({1}%)" -f $_.Index, $_.GpuUtil }) -join ', '
+        Write-Host "$($item.Host): $freeIds"
     }
 }
