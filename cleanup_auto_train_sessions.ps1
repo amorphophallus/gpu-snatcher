@@ -64,7 +64,20 @@ function Invoke-SshCommand {
         $RemoteCommand
     )
 
-    $output = & ssh @sshArgs 2>&1
+    $hasNativePreference = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
+    if ($hasNativePreference) {
+        $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $output = & ssh @sshArgs 2>&1
+    } finally {
+        if ($hasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
+    }
+
     return [pscustomobject]@{
         ExitCode = $LASTEXITCODE
         Output   = ($output | Out-String).TrimEnd()
@@ -73,20 +86,26 @@ function Invoke-SshCommand {
 
 $rows = foreach ($hostAlias in (Get-ZjuHostsFromSshConfig -Path $SshConfigPath)) {
     $killed = [System.Collections.Generic.List[string]]::new()
-    $reachable = $true
-    $note = ""
+    $sessionList = ($sessionNameCandidates | ForEach-Object { "'$_'" }) -join ' '
+    $remoteTemplate = @'
+for s in {0}; do
+    if tmux has-session -t "$s" 2>/dev/null; then
+        tmux kill-session -t "$s" >/dev/null 2>&1 && printf '%s\n' "$s"
+    fi
+done
+exit 0
+'@
+    $remoteCommand = [string]::Format($remoteTemplate, $sessionList)
+    $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand $remoteCommand
 
-    foreach ($sessionName in $sessionNameCandidates) {
-        $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand "tmux kill-session -t '$sessionName' >/dev/null 2>&1"
-        if ($result.ExitCode -eq 0) {
-            $killed.Add($sessionName)
-            continue
-        }
+    $reachable = $result.ExitCode -eq 0
+    $note = if ($reachable) { '' } else { if ($result.Output) { $result.Output } else { "SSH failed with exit code $($result.ExitCode)" } }
 
-        if ($result.Output -and $result.Output -notmatch 'can.t find session') {
-            $reachable = $false
-            $note = $result.Output
-            break
+    if ($reachable -and $result.Output) {
+        foreach ($line in ($result.Output -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                $killed.Add($line.Trim())
+            }
         }
     }
 

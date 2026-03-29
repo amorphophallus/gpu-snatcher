@@ -173,7 +173,20 @@ function Get-FirstFreeGpu {
     }
 
     if ($candidates.Count -gt 0) {
-        return $candidates | Sort-Object GpuUtil, MemoryUsed, HostAlias, GpuId | Select-Object -First 1
+        return $candidates |
+            Sort-Object `
+                GpuUtil, `
+                MemoryUsed, `
+                @{ Expression = {
+                        if ($_.HostAlias -match '(\d+)$') {
+                            [int]$Matches[1]
+                        } else {
+                            -1
+                        }
+                    }; Descending = $true }, `
+                HostAlias, `
+                GpuId |
+            Select-Object -First 1
     }
 
     throw "No reachable free GPU found."

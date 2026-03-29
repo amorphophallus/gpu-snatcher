@@ -115,7 +115,11 @@ PY
     done < <(get_hosts_from_ssh_config)
 
     if [[ ${#candidates[@]} -gt 0 ]]; then
-        printf '%s\n' "${candidates[@]}" | sort -t'|' -k3,3n -k4,4n -k1,1 -k2,2n | head -n 1
+        printf '%s\n' "${candidates[@]}" |
+            awk -F'|' '{ host_num = 0; if (match($1, /[0-9]+$/)) { host_num = substr($1, RSTART, RLENGTH) } print $0 "|" host_num }' |
+            sort -t'|' -k3,3n -k4,4n -k5,5nr -k1,1 -k2,2n |
+            head -n 1 |
+            cut -d'|' -f1-4
         return 0
     fi
 

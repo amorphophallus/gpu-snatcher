@@ -54,20 +54,20 @@ printf '%-16s %-10s %s\n' "Host" "Reachable" "KilledSessions"
 while IFS= read -r host_alias; do
     [[ -z "$host_alias" ]] && continue
 
-    reachable="yes"
-    killed=()
+    session_list=""
     for session_name in "${SESSION_NAME_CANDIDATES[@]}"; do
-        if output="$(invoke_ssh "$host_alias" "tmux kill-session -t '$session_name' >/dev/null 2>&1" 2>&1)"; then
-            killed+=("$session_name")
-            continue
-        fi
-
-        if [[ -n "$output" && ! "$output" =~ can't\ find\ session ]]; then
-            reachable="no"
-            killed=("$output")
-            break
-        fi
+        session_list+=" '$session_name'"
     done
+
+    remote_command="for s in$session_list; do if tmux has-session -t \"\$s\" 2>/dev/null; then tmux kill-session -t \"\$s\" >/dev/null 2>&1 && printf '%s\\n' \"\$s\"; fi; done; exit 0"
+
+    if output="$(invoke_ssh "$host_alias" "$remote_command" 2>&1)"; then
+        reachable="yes"
+        mapfile -t killed < <(printf '%s\n' "$output" | sed '/^[[:space:]]*$/d')
+    else
+        reachable="no"
+        killed=("$output")
+    fi
 
     if [[ "$reachable" == "yes" ]]; then
         if [[ ${#killed[@]} -eq 0 ]]; then

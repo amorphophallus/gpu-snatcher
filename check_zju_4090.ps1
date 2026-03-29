@@ -50,7 +50,20 @@ function Invoke-SshCommand {
         $RemoteCommand
     )
 
-    $output = & ssh @sshArgs 2>&1
+    $hasNativePreference = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
+    if ($hasNativePreference) {
+        $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $output = & ssh @sshArgs 2>&1
+    } finally {
+        if ($hasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
+    }
+
     $exitCode = $LASTEXITCODE
 
     return [pscustomobject]@{
