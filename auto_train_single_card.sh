@@ -3,6 +3,10 @@
 set -euo pipefail
 
 TRAIN_COMMAND=""
+SSH_NAME=""
+GPU_ID=""
+FAST_SERVER=(236 230)
+SLOW_SERVER=(228 238)
 
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.1}"
@@ -77,6 +81,9 @@ find_first_free_gpu() {
     local line
     local candidate
     local candidates=()
+    local fast_csv slow_csv
+    fast_csv="$(IFS=,; echo "${FAST_SERVER[*]}")"
+    slow_csv="$(IFS=,; echo "${SLOW_SERVER[*]}")"
 
     while IFS= read -r host_alias; do
         [[ -z "$host_alias" ]] && continue
@@ -116,14 +123,105 @@ PY
 
     if [[ ${#candidates[@]} -gt 0 ]]; then
         printf '%s\n' "${candidates[@]}" |
-            awk -F'|' '{ host_num = 0; if (match($1, /[0-9]+$/)) { host_num = substr($1, RSTART, RLENGTH) } print $0 "|" host_num }' |
-            sort -t'|' -k3,3n -k4,4n -k5,5nr -k1,1 -k2,2n |
+            awk -F'|' -v fast_csv="$fast_csv" -v slow_csv="$slow_csv" '
+                BEGIN {
+                    split(fast_csv, fast_arr, ",")
+                    split(slow_csv, slow_arr, ",")
+                    for (i in fast_arr) if (fast_arr[i] != "") fast_map[fast_arr[i]] = 1
+                    for (i in slow_arr) if (slow_arr[i] != "") slow_map[slow_arr[i]] = 1
+                }
+                {
+                    host_num = 0
+                    suffix = ""
+                    if (match($1, /[0-9]+$/)) {
+                        suffix = substr($1, RSTART, RLENGTH)
+                        host_num = suffix + 0
+                    }
+
+                    priority = 1
+                    if (suffix in fast_map) {
+                        priority = 0
+                    } else if (suffix in slow_map) {
+                        priority = 2
+                    }
+
+                    print $0 "|" priority "|" host_num
+                }
+            ' |
+            sort -t'|' -k3,3n -k4,4n -k5,5n -k6,6nr -k1,1 -k2,2n |
             head -n 1 |
             cut -d'|' -f1-4
         return 0
     fi
 
     return 1
+}
+
+find_preferred_gpu_or_error() {
+    local ssh_name="$1"
+    local gpu_id_text="$2"
+    local host_alias="zju_4090_${ssh_name}"
+    local output
+    local selected
+
+    if [[ ! "$gpu_id_text" =~ ^[0-9]+$ ]]; then
+        echo "GPU_ID must be a non-negative integer, got '$gpu_id_text'." >&2
+        return 1
+    fi
+
+    if ! output="$(invoke_ssh "$host_alias" \
+        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"; then
+        echo "Preferred host '$host_alias' is unreachable: $output" >&2
+        return 1
+    fi
+
+    if ! selected="$(printf '%s\n' "$output" | python3 - "$host_alias" "$gpu_id_text" "$MEMORY_USAGE_THRESHOLD" <<'PY'
+import sys
+
+host_alias = sys.argv[1]
+target_gpu_id = int(sys.argv[2])
+threshold = float(sys.argv[3])
+
+found = False
+for raw_line in sys.stdin.read().splitlines():
+    line = raw_line.strip()
+    if not line:
+        continue
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 4:
+        continue
+
+    gpu_id = int(parts[0])
+    if gpu_id != target_gpu_id:
+        continue
+
+    found = True
+    memory_total = float(parts[1])
+    memory_used = float(parts[2])
+    gpu_util = float(parts[3])
+    usage_ratio = memory_used / memory_total if memory_total > 0 else 1.0
+    usage_percent = round(usage_ratio * 100, 1)
+    threshold_percent = round(threshold * 100, 1)
+
+    if usage_ratio >= threshold:
+        print(
+            f"Preferred GPU not available: {host_alias} GPU{target_gpu_id} memory usage {usage_percent}% >= threshold {threshold_percent}% (gpu util {round(gpu_util)}%).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    print(f"{host_alias}|{gpu_id}|{gpu_util}|{memory_used}")
+    raise SystemExit(0)
+
+if not found:
+    print(f"Preferred GPU not found on host '{host_alias}': GPU{target_gpu_id}.", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    )"; then
+        return 1
+    fi
+
+    printf '%s\n' "$selected"
 }
 
 prepare_train_command() {
@@ -322,9 +420,15 @@ main() {
     fi
 
     local selected
-    if ! selected="$(find_first_free_gpu)"; then
-        echo "No reachable free GPU found." >&2
-        exit 1
+    if [[ -n "${SSH_NAME// }" && -n "${GPU_ID// }" ]]; then
+        if ! selected="$(find_preferred_gpu_or_error "$SSH_NAME" "$GPU_ID")"; then
+            exit 1
+        fi
+    else
+        if ! selected="$(find_first_free_gpu)"; then
+            echo "No reachable free GPU found." >&2
+            exit 1
+        fi
     fi
 
     local host_alias gpu_id gpu_util

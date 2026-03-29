@@ -12,7 +12,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.num_epochs=4000 wandb.project=multi-task-rgbd-skill-low training.gpu_id=5 randomness=low dryrun=false wandb.continue_run_id=88o88q4r"
+$global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.num_epochs=4000 wandb.project=multi-task-rgbd-skill-low training.gpu_id=7 randomness=low dryrun=false wandb.continue_run_id=e56mvprj"
+$global:SSH_NAME = "230"
+$global:GPU_ID = "0"
+$global:FAST_SERVER = @("236", "230")
+$global:SLOW_SERVER = @("228", "238")
 $sessionNameCandidates = @(
     "atlas",
     "birch",
@@ -172,11 +176,35 @@ function Get-FirstFreeGpu {
         }
     }
 
+    $fastSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($serverId in $FAST_SERVER) {
+        if (-not [string]::IsNullOrWhiteSpace($serverId)) {
+            [void]$fastSet.Add(([string]$serverId).Trim())
+        }
+    }
+
+    $slowSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($serverId in $SLOW_SERVER) {
+        if (-not [string]::IsNullOrWhiteSpace($serverId)) {
+            [void]$slowSet.Add(([string]$serverId).Trim())
+        }
+    }
+
     if ($candidates.Count -gt 0) {
         return $candidates |
             Sort-Object `
                 GpuUtil, `
                 MemoryUsed, `
+                @{ Expression = {
+                        $suffix = if ($_.HostAlias -match '(\d+)$') { $Matches[1] } else { '' }
+                        if ($suffix -and $fastSet.Contains($suffix)) {
+                            0
+                        } elseif ($suffix -and $slowSet.Contains($suffix)) {
+                            2
+                        } else {
+                            1
+                        }
+                    } }, `
                 @{ Expression = {
                         if ($_.HostAlias -match '(\d+)$') {
                             [int]$Matches[1]
@@ -190,6 +218,62 @@ function Get-FirstFreeGpu {
     }
 
     throw "No reachable free GPU found."
+}
+
+function Get-PreferredGpuOrThrow {
+    param(
+        [string]$SshName,
+        [string]$GpuIdText
+    )
+
+    if (-not ($GpuIdText -match '^\d+$')) {
+        throw "GPU_ID must be a non-negative integer, got '$GpuIdText'."
+    }
+
+    $hostAlias = "zju_4090_$SshName"
+    $targetGpuId = [int]$GpuIdText
+
+    $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand `
+        'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
+
+    if ($result.ExitCode -ne 0) {
+        throw "Preferred host '$hostAlias' is unreachable: $($result.Output)"
+    }
+
+    foreach ($line in ($result.Output -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $parts = $line -split '\s*,\s*'
+        if ($parts.Count -lt 4) {
+            continue
+        }
+
+        $gpuId = [int]$parts[0]
+        if ($gpuId -ne $targetGpuId) {
+            continue
+        }
+
+        $memoryTotal = [double]$parts[1]
+        $memoryUsed = [double]$parts[2]
+        $gpuUtil = [double]$parts[3]
+        $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
+
+        if ($usageRatio -ge $MemoryUsageThreshold) {
+            $usagePercent = [math]::Round($usageRatio * 100, 1)
+            throw "Preferred GPU not available: $hostAlias GPU$targetGpuId memory usage $usagePercent% >= threshold $([math]::Round($MemoryUsageThreshold * 100, 1))% (gpu util $([math]::Round($gpuUtil, 0))%)."
+        }
+
+        return [pscustomobject]@{
+            HostAlias = $hostAlias
+            GpuId     = $gpuId
+            GpuUtil   = $gpuUtil
+            MemoryUsed = $memoryUsed
+        }
+    }
+
+    throw "Preferred GPU not found on host '$hostAlias': GPU$targetGpuId."
 }
 
 function Update-TrainCommandGpuId {
@@ -387,7 +471,11 @@ if ([string]::IsNullOrWhiteSpace($TRAIN_COMMAND)) {
     throw "Set TRAIN_COMMAND at the top of this script before running it."
 }
 
-$selection = Get-FirstFreeGpu
+$selection = if (-not [string]::IsNullOrWhiteSpace($SSH_NAME) -and -not [string]::IsNullOrWhiteSpace($GPU_ID)) {
+    Get-PreferredGpuOrThrow -SshName $SSH_NAME -GpuIdText $GPU_ID
+} else {
+    Get-FirstFreeGpu
+}
 $preparedCommand = Update-TrainCommandGpuId -Command $TRAIN_COMMAND -GpuId $selection.GpuId
 $commandName = Get-CommandName -Command $preparedCommand
 $sessionName = Get-AvailableTmuxSessionName -HostAlias $selection.HostAlias
