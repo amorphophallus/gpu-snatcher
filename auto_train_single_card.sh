@@ -2,9 +2,10 @@
 
 set -euo pipefail
 
-TRAIN_COMMAND=""
+TRAIN_COMMAND="python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.batch_size=512 training.num_epochs=5000 wandb.project=multi-task-rgbd-skill-low-0401 training.gpu_id=3 randomness=low dryrun=false"
 SSH_NAME=""
 GPU_ID=""
+DATA_DIR_PROCESSED=""
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238)
 
@@ -305,13 +306,14 @@ start_remote_training() {
         -o BatchMode=yes \
         -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         "$host_alias" \
-        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" <<'REMOTE'
+        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" <<'REMOTE'
 set -euo pipefail
 
 session_name="$1"
 project_dir="$2"
 conda_env="$3"
 encoded_train_command="$4"
+data_dir_processed="${5:-}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 command -v tmux >/dev/null 2>&1
@@ -329,6 +331,11 @@ tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tm
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
+if [[ -n "${data_dir_processed// }" ]]; then
+    printf -v data_dir_export 'export DATA_DIR_PROCESSED=%q' "$data_dir_processed"
+    tmux send-keys -t "$session_name:train" -l "$data_dir_export"
+    tmux send-keys -t "$session_name:train" Enter
+fi
 tmux send-keys -t "$session_name:train" -l "echo __AUTO_TRAIN_READY__"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "$train_command"

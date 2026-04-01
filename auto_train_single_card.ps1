@@ -17,6 +17,7 @@ $global:SSH_NAME = "230"
 $global:GPU_ID = "0"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238")
+$global:DATA_DIR_PROCESSED = ""
 $sessionNameCandidates = @(
     "atlas",
     "birch",
@@ -287,10 +288,10 @@ function Update-TrainCommandGpuId {
     }
 
     if ($Command -match '(^|\s)training\.gpu_id=\S+') {
-        return [regex]::Replace($Command, '(^|\s)training\.gpu_id=\S+', "`$1training.gpu_id=$GpuId", 1)
+        [regex]::Replace($Command, '(^|\s)training\.gpu_id=\S+', "`$1training.gpu_id=$GpuId", 1)
+    } else {
+        "$Command training.gpu_id=$GpuId"
     }
-
-    return "$Command training.gpu_id=$GpuId"
 }
 
 function Get-CommandName {
@@ -345,7 +346,8 @@ function Start-RemoteTraining {
     param(
         [string]$HostAlias,
         [string]$SessionName,
-        [string]$PreparedCommand
+        [string]$PreparedCommand,
+        [string]$DataDirProcessed
     )
 
     $remoteScript = @'
@@ -354,6 +356,7 @@ session_name="$1"
 project_dir="$2"
 conda_env="$3"
 encoded_train_command="$4"
+data_dir_processed="${5:-}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 command -v tmux >/dev/null 2>&1
@@ -371,6 +374,11 @@ tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tm
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
+if [[ -n "${data_dir_processed// }" ]]; then
+    printf -v data_dir_export 'export DATA_DIR_PROCESSED=%q' "$data_dir_processed"
+    tmux send-keys -t "$session_name:train" -l "$data_dir_export"
+    tmux send-keys -t "$session_name:train" Enter
+fi
 tmux send-keys -t "$session_name:train" -l "echo __AUTO_TRAIN_READY__"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "$train_command"
@@ -386,7 +394,8 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
         $SessionName,
         $RemoteProjectDir,
         $RemoteCondaEnv,
-        ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PreparedCommand)))
+        ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PreparedCommand))),
+        $DataDirProcessed
     )
 
     $output = $remoteScript | & ssh @sshArgs 2>&1
@@ -479,7 +488,7 @@ $selection = if (-not [string]::IsNullOrWhiteSpace($SSH_NAME) -and -not [string]
 $preparedCommand = Update-TrainCommandGpuId -Command $TRAIN_COMMAND -GpuId $selection.GpuId
 $commandName = Get-CommandName -Command $preparedCommand
 $sessionName = Get-AvailableTmuxSessionName -HostAlias $selection.HostAlias
-$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand
+$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED
 
 if ($startResult.ExitCode -ne 0) {
     throw "Failed to start tmux session '$sessionName' on $($selection.HostAlias): $($startResult.Output)"

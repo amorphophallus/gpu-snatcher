@@ -88,7 +88,7 @@ main() {
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
 
-            IFS='|' read -r row_type row_host field1 field2 field3 field4 field5 <<< "$line"
+            IFS='|' read -r row_type row_host field1 field2 field3 field4 field5 field6 <<< "$line"
             if [[ "$row_type" == "HOST" ]]; then
                 host_state["$row_host"]="$field1"
                 host_note["$row_host"]="$field2"

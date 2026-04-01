@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Comment out a line to skip that step.
+STEPS=(
+    collect_data
+    process_pickles
+    upload
+)
+
+LOCAL_PATH="~/projects/robust-rearrangement-custom"
+REMOTE_PATH="/data/hy/robust-rearrangement-custom/"
+# REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
+REMOTE_SSH_HOST="230"
+CONDA_ENV="rr"
+CONNECT_TIMEOUT_SECONDS=10
+
+# Comment out a line to skip that task for collect/process.
+TASKS=(
+    one_leg
+    round_table
+    lamp
+)
+
+declare -A TASK_CKPT=(
+    [one_leg]="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/one_leg/low/actor_chkpt.pt"
+    [round_table]="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/round_table/low/actor_chkpt.pt"
+    [lamp]="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/lamp/low/actor_chkpt.pt"
+)
+
+declare -A TASK_MAX_ROLLOUT_STEPS=(
+    [one_leg]=700
+    [round_table]=1000
+    [lamp]=1000
+)
+
+declare -A TASK_ROLLOUT_AFTER_SUCCESS=(
+    [one_leg]=200
+    [round_table]=50
+    [lamp]=20
+)
+
+COLLECT_N_ENVS=4
+COLLECT_N_ROLLOUTS=56
+COLLECT_IF_EXISTS="append"
+COLLECT_ACTION_TYPE="pos"
+COLLECT_OBSERVATION_SPACE="image"
+COLLECT_RANDOMNESS="low"
+
+COLLECT_FLAGS=(
+    --save-rollouts
+    --save-depth-image
+    --annotate-skill
+    --skill-on-image
+)
+
+PROCESS_CONTROLLER="diffik"
+PROCESS_DOMAIN="sim"
+PROCESS_SOURCE="rollout"
+PROCESS_RANDOMNESS="low"
+PROCESS_OUTCOME="success"
+PROCESS_SUFFIX="rgbd"
+PROCESS_OUTPUT_SUFFIX="rgbd-skill"
+PROCESS_BATCH_SIZE=2
+
+PROCESS_FLAGS=(
+    --overwrite
+)
+
+UPLOAD_RELATIVE_DIR="data/processed/diffik/sim"
+
+log_info() {
+    printf '[%s] INFO %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+log_error() {
+    printf '[%s] ERROR %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+die() {
+    log_error "$*"
+    exit 1
+}
+
+expand_path() {
+    local path="$1"
+    if [[ "$path" == "~" ]]; then
+        printf '%s\n' "$HOME"
+    elif [[ "$path" == "~/"* ]]; then
+        printf '%s\n' "$HOME/${path#"~/"}"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
+require_command() {
+    local cmd="$1"
+    command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
+}
+
+quote_command() {
+    local quoted=""
+    local arg
+    for arg in "$@"; do
+        printf -v quoted '%s%q ' "$quoted" "$arg"
+    done
+    printf '%s\n' "${quoted% }"
+}
+
+normalize_remote_ssh_host() {
+    local host="$1"
+    host="${host//[[:space:]]/}"
+
+    if [[ -z "$host" ]]; then
+        printf '%s\n' ""
+    elif [[ "$host" =~ ^[0-9]+$ ]]; then
+        printf 'zju_4090_%s\n' "$host"
+    else
+        printf '%s\n' "$host"
+    fi
+}
+
+activate_conda_env() {
+    local env_name="$1"
+
+    if command -v conda >/dev/null 2>&1; then
+        eval "$(conda shell.bash hook 2>/dev/null)"
+    elif [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    elif [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
+        source "$HOME/anaconda3/etc/profile.d/conda.sh"
+    else
+        die "Unable to initialize conda. Please install conda or update activate_conda_env()."
+    fi
+
+    conda activate "$env_name"
+}
+
+run_python_command() {
+    local local_root="$1"
+    shift
+    local -a cmd=( "$@" )
+
+    log_info "Running command in ${local_root}: $(quote_command "${cmd[@]}")"
+    (
+        cd "$local_root"
+        activate_conda_env "$CONDA_ENV"
+        "${cmd[@]}"
+    )
+}
+
+collect_data_step() {
+    local local_root="$1"
+    local task checkpoint_path max_rollout_steps rollout_after_success
+    local -a collect_cmd
+
+    require_command python3
+
+    for task in "${TASKS[@]}"; do
+        [[ -n "${TASK_CKPT[$task]+x}" ]] || die "TASK_CKPT is missing task: ${task}"
+        [[ -n "${TASK_MAX_ROLLOUT_STEPS[$task]+x}" ]] || die "TASK_MAX_ROLLOUT_STEPS is missing task: ${task}"
+        [[ -n "${TASK_ROLLOUT_AFTER_SUCCESS[$task]+x}" ]] || die "TASK_ROLLOUT_AFTER_SUCCESS is missing task: ${task}"
+
+        checkpoint_path="${TASK_CKPT[$task]}"
+        max_rollout_steps="${TASK_MAX_ROLLOUT_STEPS[$task]}"
+        rollout_after_success="${TASK_ROLLOUT_AFTER_SUCCESS[$task]}"
+
+        collect_cmd=(
+            python -m src.eval.evaluate_model
+            --n-envs "$COLLECT_N_ENVS"
+            --n-rollouts "$COLLECT_N_ROLLOUTS"
+            -f "$task"
+            --if-exists "$COLLECT_IF_EXISTS"
+            --max-rollout-steps "$max_rollout_steps"
+            --action-type "$COLLECT_ACTION_TYPE"
+            --observation-space "$COLLECT_OBSERVATION_SPACE"
+            --randomness "$COLLECT_RANDOMNESS"
+            --wt-path "$checkpoint_path"
+            "${COLLECT_FLAGS[@]}"
+            --rollout-after-success "$rollout_after_success"
+        )
+
+        log_info "Collecting data for task: ${task}"
+        run_python_command "$local_root" "${collect_cmd[@]}"
+    done
+}
+
+process_pickles_step() {
+    local local_root="$1"
+    local task
+    local -a process_cmd
+
+    require_command python3
+
+    for task in "${TASKS[@]}"; do
+        process_cmd=(
+            python -m src.data_processing.process_pickles
+            -c "$PROCESS_CONTROLLER"
+            -d "$PROCESS_DOMAIN"
+            -f "$task"
+            -s "$PROCESS_SOURCE"
+            -r "$PROCESS_RANDOMNESS"
+            -o "$PROCESS_OUTCOME"
+            --suffix "$PROCESS_SUFFIX"
+            --output-suffix "$PROCESS_OUTPUT_SUFFIX"
+            --batch-size "$PROCESS_BATCH_SIZE"
+            "${PROCESS_FLAGS[@]}"
+        )
+
+        log_info "Processing pickles for task: ${task}"
+        run_python_command "$local_root" "${process_cmd[@]}"
+    done
+}
+
+upload_step() {
+    local local_root="$1"
+    local upload_dir remote_ssh_host remote_upload_dir
+    local remote_mkdir_cmd remote_extract_cmd
+
+    upload_dir="${local_root%/}/${UPLOAD_RELATIVE_DIR}"
+    [[ -d "$upload_dir" ]] || die "Upload directory does not exist: ${upload_dir}"
+
+    remote_ssh_host="$(normalize_remote_ssh_host "${REMOTE_SSH_HOST:-}")"
+    remote_upload_dir="${REMOTE_PATH%/}/${UPLOAD_RELATIVE_DIR}"
+
+    [[ -n "$remote_ssh_host" ]] || die "REMOTE_SSH_HOST is required for upload."
+
+    require_command ssh
+    require_command tar
+    printf -v remote_mkdir_cmd 'mkdir -p %q' "$remote_upload_dir"
+    printf -v remote_extract_cmd 'tar -xf - -C %q' "$remote_upload_dir"
+    log_info "Ensuring remote upload directory exists: ${remote_ssh_host}:${remote_upload_dir}"
+    ssh \
+        -o BatchMode=yes \
+        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+        "$remote_ssh_host" \
+        "$remote_mkdir_cmd"
+    log_info "Uploading contents of ${upload_dir} to ${remote_ssh_host}:${remote_upload_dir}"
+    (
+        cd "$upload_dir"
+        tar -cf - .
+    ) | ssh \
+        -o BatchMode=yes \
+        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+        "$remote_ssh_host" \
+        "$remote_extract_cmd"
+}
+
+main() {
+    local local_root step
+
+    local_root="$(expand_path "$LOCAL_PATH")"
+    [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
+
+    if [[ ${#STEPS[@]} -eq 0 ]]; then
+        log_info "No steps selected in STEPS; nothing to do."
+        return 0
+    fi
+
+    for step in "${STEPS[@]}"; do
+        case "$step" in
+            collect_data)
+                collect_data_step "$local_root"
+                ;;
+            process_pickles)
+                process_pickles_step "$local_root"
+                ;;
+            upload)
+                upload_step "$local_root"
+                ;;
+            *)
+                die "Unknown step in STEPS: ${step}"
+                ;;
+        esac
+    done
+
+    log_info "auto_data_preparation finished successfully."
+}
+
+main "$@"
