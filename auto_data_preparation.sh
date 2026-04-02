@@ -4,8 +4,8 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    collect_data
-    process_pickles
+    # collect_data
+    # process_pickles
     upload
 )
 
@@ -15,6 +15,8 @@ REMOTE_PATH="/data/hy/robust-rearrangement-custom/"
 REMOTE_SSH_HOST="230"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
+UPLOAD_MAX_RETRIES=5
+UPLOAD_RETRY_DELAY_SECONDS=5
 
 # Comment out a line to skip that task for collect/process.
 TASKS=(
@@ -97,6 +99,36 @@ expand_path() {
 require_command() {
     local cmd="$1"
     command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
+}
+
+run_with_retry() {
+    local max_retries="$1"
+    local retry_delay_seconds="$2"
+    local description="$3"
+    shift 3
+
+    local attempt exit_code
+
+    attempt=1
+    while (( attempt <= max_retries )); do
+        log_info "${description} (attempt ${attempt}/${max_retries})"
+        if "$@"; then
+            if (( attempt > 1 )); then
+                log_info "${description} succeeded on attempt ${attempt}/${max_retries}"
+            fi
+            return 0
+        else
+            exit_code=$?
+        fi
+        if (( attempt == max_retries )); then
+            log_error "${description} failed on attempt ${attempt}/${max_retries} with exit code ${exit_code}"
+            return "$exit_code"
+        fi
+
+        log_info "${description} failed on attempt ${attempt}/${max_retries} with exit code ${exit_code}; retrying in ${retry_delay_seconds}s"
+        sleep "$retry_delay_seconds"
+        ((attempt++))
+    done
 }
 
 quote_command() {
@@ -216,7 +248,10 @@ process_pickles_step() {
 upload_step() {
     local local_root="$1"
     local upload_dir remote_ssh_host remote_upload_dir
-    local remote_mkdir_cmd remote_extract_cmd
+    local remote_mkdir_cmd
+    local -a ssh_mkdir_cmd
+    local -a rsync_upload_cmd
+    local rsync_ssh_cmd
 
     upload_dir="${local_root%/}/${UPLOAD_RELATIVE_DIR}"
     [[ -d "$upload_dir" ]] || die "Upload directory does not exist: ${upload_dir}"
@@ -227,24 +262,41 @@ upload_step() {
     [[ -n "$remote_ssh_host" ]] || die "REMOTE_SSH_HOST is required for upload."
 
     require_command ssh
-    require_command tar
+    require_command rsync
     printf -v remote_mkdir_cmd 'mkdir -p %q' "$remote_upload_dir"
-    printf -v remote_extract_cmd 'tar -xf - -C %q' "$remote_upload_dir"
-    log_info "Ensuring remote upload directory exists: ${remote_ssh_host}:${remote_upload_dir}"
-    ssh \
+    ssh_mkdir_cmd=(
+        ssh
         -o BatchMode=yes \
         -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        "$remote_ssh_host" \
+        -o ServerAliveInterval=5
+        -o ServerAliveCountMax=3
+        "$remote_ssh_host"
         "$remote_mkdir_cmd"
-    log_info "Uploading contents of ${upload_dir} to ${remote_ssh_host}:${remote_upload_dir}"
-    (
-        cd "$upload_dir"
-        tar -cf - .
-    ) | ssh \
-        -o BatchMode=yes \
-        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        "$remote_ssh_host" \
-        "$remote_extract_cmd"
+    )
+    rsync_ssh_cmd="ssh -o BatchMode=yes -o ConnectTimeout=${CONNECT_TIMEOUT_SECONDS} -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+    rsync_upload_cmd=(
+        rsync
+        -a
+        --partial-dir=.rsync-partial
+        --human-readable
+        --info=progress2
+        -e
+        "$rsync_ssh_cmd"
+        "${upload_dir}/"
+        "${remote_ssh_host}:${remote_upload_dir}/"
+    )
+
+    run_with_retry \
+        "$UPLOAD_MAX_RETRIES" \
+        "$UPLOAD_RETRY_DELAY_SECONDS" \
+        "Ensuring remote upload directory exists: ${remote_ssh_host}:${remote_upload_dir}" \
+        "${ssh_mkdir_cmd[@]}"
+
+    run_with_retry \
+        "$UPLOAD_MAX_RETRIES" \
+        "$UPLOAD_RETRY_DELAY_SECONDS" \
+        "Uploading folder ${upload_dir} to ${remote_ssh_host}:${remote_upload_dir} via rsync" \
+        "${rsync_upload_cmd[@]}"
 }
 
 main() {

@@ -2,12 +2,12 @@
 
 set -euo pipefail
 
-TRAIN_COMMAND="python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.batch_size=512 training.num_epochs=5000 wandb.project=multi-task-rgbd-skill-low-0401 training.gpu_id=3 randomness=low dryrun=false"
-SSH_NAME=""
-GPU_ID=""
-DATA_DIR_PROCESSED=""
+TRAIN_COMMAND="python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.batch_size=512 training.num_epochs=5000 wandb.project=multi-task-rgbd-skill-low-smalldot training.gpu_id=3 randomness=low dryrun=false"
+SSH_NAME="230"
+GPU_ID="0"
+DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"
 FAST_SERVER=(236 230)
-SLOW_SERVER=(228 238)
+SLOW_SERVER=(228 238 240)
 
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.1}"
@@ -76,26 +76,26 @@ invoke_ssh() {
     fi
 }
 
-find_first_free_gpu() {
-    local host_alias
-    local output
-    local line
-    local candidate
-    local candidates=()
-    local fast_csv slow_csv
-    fast_csv="$(IFS=,; echo "${FAST_SERVER[*]}")"
-    slow_csv="$(IFS=,; echo "${SLOW_SERVER[*]}")"
+get_host_gpu_status() {
+    local host_alias="$1"
+    local query_output
+    local ssh_status
 
-    while IFS= read -r host_alias; do
-        [[ -z "$host_alias" ]] && continue
-        if ! output="$(invoke_ssh "$host_alias" \
-            "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"; then
-            continue
-        fi
+    query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+        -o StrictHostKeyChecking=accept-new \
+        "$host_alias" \
+        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
+    ssh_status=$?
 
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            if candidate="$(python3 - "$host_alias" "$MEMORY_USAGE_THRESHOLD" "$line" <<'PY'
+    if [[ $ssh_status -ne 0 ]]; then
+        printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$query_output"
+        return 0
+    fi
+
+    printf 'HOST|%s|OK|\n' "$host_alias"
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        python3 - "$host_alias" "$MEMORY_USAGE_THRESHOLD" "$line" <<'PY'
 import sys
 
 host = sys.argv[1]
@@ -105,21 +105,38 @@ parts = [p.strip() for p in line.split(",")]
 if len(parts) < 4:
     sys.exit(0)
 
-gpu_id = int(parts[0])
+index = int(parts[0])
 memory_total = float(parts[1])
 memory_used = float(parts[2])
 gpu_util = float(parts[3])
 usage_ratio = memory_used / memory_total if memory_total > 0 else 1.0
+usage_percent = round(usage_ratio * 100, 1)
+status = "FREE" if usage_ratio < threshold else "BUSY"
 
-if usage_ratio < threshold:
-    print(f"{host}|{gpu_id}|{gpu_util}|{memory_used}")
-    sys.exit(0)
-sys.exit(1)
+print(
+    f"GPU|{host}|{index}|{status}|{int(round(memory_used))}|{int(round(memory_total))}|{usage_percent}|{int(round(gpu_util))}"
+)
 PY
-            )"; then
-                candidates+=("$candidate")
+    done <<< "$query_output"
+}
+
+find_first_free_gpu() {
+    local host_alias
+    local line
+    local candidates=()
+    local fast_csv slow_csv
+    fast_csv="$(IFS=,; echo "${FAST_SERVER[*]}")"
+    slow_csv="$(IFS=,; echo "${SLOW_SERVER[*]}")"
+
+    while IFS= read -r host_alias; do
+        [[ -z "$host_alias" ]] && continue
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            IFS='|' read -r row_type row_host field1 field2 field3 _field4 _field5 field6 <<< "$line"
+            if [[ "$row_type" == "GPU" && "$field2" == "FREE" ]]; then
+                candidates+=("${row_host}|${field1}|${field6}|${field3}")
             fi
-        done <<< "$output"
+        done < <(get_host_gpu_status "$host_alias")
     done < <(get_hosts_from_ssh_config)
 
     if [[ ${#candidates[@]} -gt 0 ]]; then
@@ -162,63 +179,60 @@ find_preferred_gpu_or_error() {
     local ssh_name="$1"
     local gpu_id_text="$2"
     local host_alias="zju_4090_${ssh_name}"
-    local output
     local selected
+    local host_state="DOWN"
+    local host_note=""
+    local line
+    local -a seen_gpu_ids=()
 
     if [[ ! "$gpu_id_text" =~ ^[0-9]+$ ]]; then
         echo "GPU_ID must be a non-negative integer, got '$gpu_id_text'." >&2
         return 1
     fi
 
-    if ! output="$(invoke_ssh "$host_alias" \
-        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"; then
-        echo "Preferred host '$host_alias' is unreachable: $output" >&2
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        IFS='|' read -r row_type row_host field1 field2 field3 _field4 field5 field6 <<< "$line"
+        if [[ "$row_type" == "HOST" ]]; then
+            host_state="$field1"
+            host_note="$field2"
+            continue
+        fi
+
+        if [[ "$row_type" != "GPU" ]]; then
+            continue
+        fi
+
+        seen_gpu_ids+=("$field1")
+        if [[ "$field1" != "$gpu_id_text" ]]; then
+            continue
+        fi
+
+        if [[ "$field2" != "FREE" ]]; then
+            echo "Preferred GPU not available: ${host_alias} GPU${gpu_id_text} memory usage ${field5}% >= threshold $(python3 - "$MEMORY_USAGE_THRESHOLD" <<'PY'
+import sys
+print(round(float(sys.argv[1]) * 100, 1))
+PY
+)% (gpu util ${field6}%)." >&2
+            return 1
+        fi
+
+        selected="${row_host}|${field1}|${field6}|${field3}"
+    done < <(get_host_gpu_status "$host_alias")
+
+    if [[ "$host_state" != "OK" ]]; then
+        echo "Preferred host '$host_alias' is unreachable: $host_note" >&2
         return 1
     fi
 
-    if ! selected="$(printf '%s\n' "$output" | python3 - "$host_alias" "$gpu_id_text" "$MEMORY_USAGE_THRESHOLD" <<'PY'
-import sys
-
-host_alias = sys.argv[1]
-target_gpu_id = int(sys.argv[2])
-threshold = float(sys.argv[3])
-
-found = False
-for raw_line in sys.stdin.read().splitlines():
-    line = raw_line.strip()
-    if not line:
-        continue
-    parts = [p.strip() for p in line.split(",")]
-    if len(parts) < 4:
-        continue
-
-    gpu_id = int(parts[0])
-    if gpu_id != target_gpu_id:
-        continue
-
-    found = True
-    memory_total = float(parts[1])
-    memory_used = float(parts[2])
-    gpu_util = float(parts[3])
-    usage_ratio = memory_used / memory_total if memory_total > 0 else 1.0
-    usage_percent = round(usage_ratio * 100, 1)
-    threshold_percent = round(threshold * 100, 1)
-
-    if usage_ratio >= threshold:
-        print(
-            f"Preferred GPU not available: {host_alias} GPU{target_gpu_id} memory usage {usage_percent}% >= threshold {threshold_percent}% (gpu util {round(gpu_util)}%).",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
-    print(f"{host_alias}|{gpu_id}|{gpu_util}|{memory_used}")
-    raise SystemExit(0)
-
-if not found:
-    print(f"Preferred GPU not found on host '{host_alias}': GPU{target_gpu_id}.", file=sys.stderr)
-    raise SystemExit(1)
-PY
-    )"; then
+    if [[ -z "$selected" ]]; then
+        local available_gpu_ids
+        if [[ ${#seen_gpu_ids[@]} -gt 0 ]]; then
+            available_gpu_ids="$(IFS=', '; printf '%s' "${seen_gpu_ids[*]}")"
+        else
+            available_gpu_ids="none"
+        fi
+        echo "Preferred GPU not found on host '$host_alias': GPU${gpu_id_text}. Available GPU IDs reported by nvidia-smi: ${available_gpu_ids}. GPU IDs are 0-based." >&2
         return 1
     fi
 

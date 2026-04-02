@@ -16,7 +16,7 @@ $global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet task=
 $global:SSH_NAME = "230"
 $global:GPU_ID = "0"
 $global:FAST_SERVER = @("236", "230")
-$global:SLOW_SERVER = @("228", "238")
+$global:SLOW_SERVER = @("228", "238", "240")
 $global:DATA_DIR_PROCESSED = ""
 $sessionNameCandidates = @(
     "atlas",
@@ -115,6 +115,99 @@ function Invoke-SshCommand {
     }
 }
 
+function Invoke-GpuQueryCommand {
+    param([string]$HostAlias)
+
+    $query = 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
+    $sshArgs = @(
+        '-o', 'BatchMode=yes',
+        '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
+        $HostAlias,
+        $query
+    )
+
+    $hasNativePreference = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
+    if ($hasNativePreference) {
+        $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $output = & ssh @sshArgs 2>&1
+    } finally {
+        if ($hasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($output | Out-String).Trim()
+    }
+}
+
+function Get-HostGpuStatus {
+    param(
+        [string]$HostAlias,
+        [double]$Threshold
+    )
+
+    $result = Invoke-GpuQueryCommand -HostAlias $HostAlias
+
+    if ($result.ExitCode -ne 0) {
+        return [pscustomobject]@{
+            Host              = $HostAlias
+            Reachable         = $false
+            Error             = if ($result.Output) { $result.Output } else { "SSH failed with exit code $($result.ExitCode)" }
+            Gpus              = @()
+            AvailableGpuCount = 0
+            TotalGpuCount     = 0
+        }
+    }
+
+    $gpus = @()
+    foreach ($line in ($result.Output -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $parts = $line -split '\s*,\s*'
+        if ($parts.Count -lt 4) {
+            continue
+        }
+
+        $index = [int]$parts[0]
+        $memoryTotal = [double]$parts[1]
+        $memoryUsed = [double]$parts[2]
+        $gpuUtil = [double]$parts[3]
+        $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
+        $available = $usageRatio -lt $Threshold
+
+        $gpus += [pscustomobject]@{
+            Index        = $index
+            MemoryTotal  = [math]::Round($memoryTotal, 0)
+            MemoryUsed   = [math]::Round($memoryUsed, 0)
+            UsagePercent = [math]::Round($usageRatio * 100, 1)
+            GpuUtil      = [math]::Round($gpuUtil, 0)
+            Available    = $available
+            Status       = if ($available) { "FREE" } else { "BUSY" }
+        }
+    }
+
+    $sortedGpus = @($gpus | Sort-Object Index)
+    $availableGpuCount = @($sortedGpus | Where-Object Available).Count
+
+    return [pscustomobject]@{
+        Host              = $HostAlias
+        Reachable         = $true
+        Error             = $null
+        Gpus              = $sortedGpus
+        AvailableGpuCount = $availableGpuCount
+        TotalGpuCount     = @($sortedGpus).Count
+    }
+}
+
 function Write-StructuredStatusAndExit {
     param(
         [string]$Status,
@@ -143,37 +236,18 @@ function Get-FirstFreeGpu {
     $candidates = @()
 
     foreach ($hostAlias in (Get-ZjuHostsFromSshConfig -Path $SshConfigPath)) {
-        $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand `
-            'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
-
-        if ($result.ExitCode -ne 0) {
+        $status = Get-HostGpuStatus -HostAlias $hostAlias -Threshold $MemoryUsageThreshold
+        if (-not $status.Reachable) {
             continue
         }
 
-        foreach ($line in ($result.Output -split "`r?`n")) {
-            if ([string]::IsNullOrWhiteSpace($line)) {
-                continue
-            }
-
-            $parts = $line -split '\s*,\s*'
-            if ($parts.Count -lt 4) {
-                continue
-            }
-
-            $gpuId = [int]$parts[0]
-            $memoryTotal = [double]$parts[1]
-            $memoryUsed = [double]$parts[2]
-            $gpuUtil = [double]$parts[3]
-            $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
-
-            if ($usageRatio -lt $MemoryUsageThreshold) {
+        foreach ($gpu in ($status.Gpus | Where-Object Available)) {
                 $candidates += [pscustomobject]@{
                     HostAlias = $hostAlias
-                    GpuId     = $gpuId
-                    GpuUtil   = $gpuUtil
-                    MemoryUsed = $memoryUsed
+                    GpuId     = $gpu.Index
+                    GpuUtil   = $gpu.GpuUtil
+                    MemoryUsed = $gpu.MemoryUsed
                 }
-            }
         }
     }
 
@@ -234,47 +308,27 @@ function Get-PreferredGpuOrThrow {
     $hostAlias = "zju_4090_$SshName"
     $targetGpuId = [int]$GpuIdText
 
-    $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand `
-        'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
-
-    if ($result.ExitCode -ne 0) {
-        throw "Preferred host '$hostAlias' is unreachable: $($result.Output)"
+    $status = Get-HostGpuStatus -HostAlias $hostAlias -Threshold $MemoryUsageThreshold
+    if (-not $status.Reachable) {
+        throw "Preferred host '$hostAlias' is unreachable: $($status.Error)"
     }
 
-    foreach ($line in ($result.Output -split "`r?`n")) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
-        }
-
-        $parts = $line -split '\s*,\s*'
-        if ($parts.Count -lt 4) {
-            continue
-        }
-
-        $gpuId = [int]$parts[0]
-        if ($gpuId -ne $targetGpuId) {
-            continue
-        }
-
-        $memoryTotal = [double]$parts[1]
-        $memoryUsed = [double]$parts[2]
-        $gpuUtil = [double]$parts[3]
-        $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
-
-        if ($usageRatio -ge $MemoryUsageThreshold) {
-            $usagePercent = [math]::Round($usageRatio * 100, 1)
-            throw "Preferred GPU not available: $hostAlias GPU$targetGpuId memory usage $usagePercent% >= threshold $([math]::Round($MemoryUsageThreshold * 100, 1))% (gpu util $([math]::Round($gpuUtil, 0))%)."
-        }
-
-        return [pscustomobject]@{
-            HostAlias = $hostAlias
-            GpuId     = $gpuId
-            GpuUtil   = $gpuUtil
-            MemoryUsed = $memoryUsed
-        }
+    $gpu = @($status.Gpus | Where-Object { $_.Index -eq $targetGpuId } | Select-Object -First 1)
+    if ($gpu.Count -eq 0) {
+        $availableGpuIds = if ($status.Gpus.Count -gt 0) { ($status.Gpus | ForEach-Object { $_.Index.ToString() }) -join ', ' } else { 'none' }
+        throw "Preferred GPU not found on host '$hostAlias': GPU$targetGpuId. Available GPU IDs reported by nvidia-smi: $availableGpuIds. GPU IDs are 0-based."
     }
 
-    throw "Preferred GPU not found on host '$hostAlias': GPU$targetGpuId."
+    if (-not $gpu[0].Available) {
+        throw "Preferred GPU not available: $hostAlias GPU$targetGpuId memory usage $($gpu[0].UsagePercent)% >= threshold $([math]::Round($MemoryUsageThreshold * 100, 1))% (gpu util $($gpu[0].GpuUtil)%)." 
+    }
+
+    return [pscustomobject]@{
+        HostAlias = $hostAlias
+        GpuId     = $gpu[0].Index
+        GpuUtil   = $gpu[0].GpuUtil
+        MemoryUsed = $gpu[0].MemoryUsed
+    }
 }
 
 function Update-TrainCommandGpuId {

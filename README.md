@@ -17,7 +17,7 @@ Simple helper scripts for checking ZJU 4090 servers, starting a single-card trai
   Linux-only helper for locating the latest `outputs/{date}/{time}` run matching a `RUN_ID`, downloading the selected checkpoint into `LOCAL_PATH/checkpoints/bc/{TASK}/low/`, and launching `src.eval.evaluate_model` locally.
 
 - `auto_data_preparation.sh`
-  Linux-only helper for running rollout collection, batch processing pickles for multiple tasks, and uploading everything under `LOCAL_PATH/UPLOAD_RELATIVE_DIR` to `REMOTE_PATH/UPLOAD_RELATIVE_DIR`.
+  Linux-only helper for running rollout collection, batch processing pickles for multiple tasks, and uploading the whole `LOCAL_PATH/UPLOAD_RELATIVE_DIR` folder to `REMOTE_PATH/UPLOAD_RELATIVE_DIR` via `rsync` with progress display and resumable partial transfers.
 
 ## Usage
 
