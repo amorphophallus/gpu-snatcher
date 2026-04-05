@@ -11,15 +11,18 @@ STEPS=(
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
 REMOTE_SSH_HOST="230"
 RUN_ID="e56mvprj"
-LOCAL_PATH="~/projects/robust-rearrangement-custom"
+LOCAL_PATH="/data/hy/robust-rearrangement"
 TASK="one_leg+round_table+lamp"
 PROJECT="rgbd_skill"
-EPOCH="2000"
+EPOCH="4000"
 N_ENVS=3
 N_ROLLOUTS=15
 CONDA_ENV="rr"
 CHECKPOINT_PATTERN="*best_test_loss*.pt"
 CONNECT_TIMEOUT_SECONDS=10
+
+# Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
+ROLLOUT_SUFFIX_MODEL_NAME=""
 
 PARAMS=(
     --if-exists append
@@ -329,6 +332,7 @@ download_checkpoint_step() {
 eval_step() {
     local local_root="$1"
     local local_checkpoint="$2"
+    local rollout_suffix_model_name="$3"
     local normalized_task
     local -a task_args
     local -a eval_cmd
@@ -345,6 +349,7 @@ eval_step() {
         --n-rollouts "$N_ROLLOUTS"
         -f "${task_args[@]}"
         "${PARAMS[@]}"
+        --rollout-suffix-model-name "$rollout_suffix_model_name"
         --wt-path "$local_checkpoint"
     )
 
@@ -358,15 +363,54 @@ eval_step() {
     log_info "Evaluation finished successfully."
 }
 
+print_usage() {
+    cat <<'USAGE'
+Usage: auto_eval.sh [--rollout-suffix-model-name NAME]
+
+Options:
+  --rollout-suffix-model-name NAME  Value passed to evaluator; defaults to local checkpoint filename stem.
+  -h, --help                        Show this help.
+USAGE
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --rollout-suffix-model-name)
+                shift
+                [[ $# -gt 0 ]] || die "--rollout-suffix-model-name requires a value"
+                ROLLOUT_SUFFIX_MODEL_NAME="$1"
+                shift
+                ;;
+            -h|--help)
+                print_usage
+                exit 0
+                ;;
+            *)
+                die "Unknown argument: $1 (use --help)"
+                ;;
+        esac
+    done
+}
+
 main() {
     local local_root destination_dir local_checkpoint
+    local rollout_suffix_model_name
     local step
+
+    parse_args "$@"
 
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
 
     destination_dir="${local_root}/checkpoints/bc/${TASK}/low"
     local_checkpoint="${destination_dir}/${PROJECT}_best_test_loss_${EPOCH}.pt"
+
+    rollout_suffix_model_name="$ROLLOUT_SUFFIX_MODEL_NAME"
+    if [[ -z "$rollout_suffix_model_name" ]]; then
+        rollout_suffix_model_name="$(basename -- "$local_checkpoint")"
+        rollout_suffix_model_name="${rollout_suffix_model_name%.*}"
+    fi
 
     if [[ ${#STEPS[@]} -eq 0 ]]; then
         log_info "No steps selected in STEPS; nothing to do."
@@ -379,7 +423,7 @@ main() {
                 download_checkpoint_step "$local_checkpoint"
                 ;;
             eval)
-                eval_step "$local_root" "$local_checkpoint"
+                eval_step "$local_root" "$local_checkpoint" "$rollout_suffix_model_name"
                 ;;
             *)
                 die "Unknown step in STEPS: ${step}"
