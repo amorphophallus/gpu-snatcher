@@ -2,7 +2,39 @@
 
 set -euo pipefail
 
-TRAIN_COMMAND="python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.batch_size=512 training.num_epochs=5000 wandb.project=multi-task-rgbd-skill-low-smalldot training.gpu_id=3 randomness=low dryrun=false"
+join_command_parts() {
+    python3 - "$@" <<'PY'
+import shlex
+import sys
+
+print(shlex.join(sys.argv[1:]))
+PY
+}
+
+# 单卡训练命令
+TRAIN_COMMAND_PARTS=(
+    python
+    -m
+    src.train.bc
+    +experiment=rgbd/diff_unet
+    "task=[one_leg,round_table,lamp]"
+    data.demo_source=rollout
+    data.demo_outcome=success
+    data.suffix=rgbd-skill
+    data.data_subset=50
+    training.batch_size=256
+    training.num_epochs=5000
+    training.steps_per_epoch=-1
+    training.save_per_epoch=1000
+    wandb.project=multi-task-rgbd-skill-low-smalldot
+    training.gpu_id=0
+    randomness=low
+    dryrun=false
+)
+# # 多卡训练命令
+# TRAIN_COMMAND_PARTS=(
+# )
+TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="230"
 GPU_ID="0"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"

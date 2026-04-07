@@ -4,14 +4,14 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    download
+    # download
     eval
 )
 
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
 REMOTE_SSH_HOST="230"
 RUN_ID="e56mvprj"
-LOCAL_PATH="/data/hy/robust-rearrangement"
+LOCAL_PATH="~/projects/robust-rearrangement-custom"
 TASK="one_leg+round_table+lamp"
 PROJECT="rgbd_skill"
 EPOCH="4000"

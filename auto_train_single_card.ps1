@@ -12,7 +12,33 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet task='[one_leg,round_table,lamp]' data.demo_source=rollout data.demo_outcome=success data.suffix=rgbd-skill data.data_subset=50 training.num_epochs=4000 wandb.project=multi-task-rgbd-skill-low training.gpu_id=7 randomness=low dryrun=false wandb.continue_run_id=e56mvprj"
+$global:TRAIN_COMMAND_PARTS = @(
+    "python",
+    "-m",
+    "src.train.bc",
+    "+experiment=rgbd/diff_unet",
+    "task=[one_leg,round_table,lamp]",
+    "data.demo_source=rollout",
+    "data.demo_outcome=success",
+    "data.suffix=rgbd-skill",
+    "data.data_subset=50",
+    "training.batch_size=256",
+    "training.num_epochs=4000",
+    "training.steps_per_epoch=-1",
+    "training.save_per_epoch=1000",
+    "wandb.project=multi-task-rgbd-skill-low",
+    "training.gpu_id=7",
+    "randomness=low",
+    "dryrun=false",
+    "wandb.continue_run_id=e56mvprj"
+)
+$global:TRAIN_COMMAND = [string]::Join(' ', ($global:TRAIN_COMMAND_PARTS | ForEach-Object {
+    if ($_ -match '[\s"]') {
+        '"' + ($_ -replace '"', '\"') + '"'
+    } else {
+        $_
+    }
+}))
 $global:SSH_NAME = "230"
 $global:GPU_ID = "0"
 $global:FAST_SERVER = @("236", "230")
