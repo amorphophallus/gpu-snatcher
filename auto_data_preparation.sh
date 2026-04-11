@@ -4,15 +4,16 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # collect_data
-    # process_pickles
+    collect_data
+    process_pickles
     upload
 )
 
-LOCAL_PATH="~/projects/robust-rearrangement-custom"
-REMOTE_PATH="/data/hy/robust-rearrangement-custom/"
-# REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
-REMOTE_SSH_HOST="230"
+LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
+# LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
+REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
+# REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
+REMOTE_SSH_HOST="240"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
@@ -25,10 +26,10 @@ TASKS=(
     lamp
 )
 
-declare -A TASK_CKPT=(
-    [one_leg]="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/one_leg/low/actor_chkpt.pt"
-    [round_table]="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/round_table/low/actor_chkpt.pt"
-    [lamp]="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/lamp/low/actor_chkpt.pt"
+declare -A TASK_CKPT=(  # relative to local root
+    [one_leg]="/checkpoints/rppo/one_leg/low/actor_chkpt.pt"
+    [round_table]="/checkpoints/rppo/round_table/low/actor_chkpt.pt"
+    [lamp]="/checkpoints/rppo/lamp/low/actor_chkpt.pt"
 )
 
 declare -A TASK_MAX_ROLLOUT_STEPS=(
@@ -44,7 +45,7 @@ declare -A TASK_ROLLOUT_AFTER_SUCCESS=(
 )
 
 COLLECT_N_ENVS=4
-COLLECT_N_ROLLOUTS=56
+COLLECT_N_ROLLOUTS=516  # 要多少数据
 COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
@@ -194,7 +195,7 @@ collect_data_step() {
         [[ -n "${TASK_MAX_ROLLOUT_STEPS[$task]+x}" ]] || die "TASK_MAX_ROLLOUT_STEPS is missing task: ${task}"
         [[ -n "${TASK_ROLLOUT_AFTER_SUCCESS[$task]+x}" ]] || die "TASK_ROLLOUT_AFTER_SUCCESS is missing task: ${task}"
 
-        checkpoint_path="${TASK_CKPT[$task]}"
+        checkpoint_path="${local_root%/}${TASK_CKPT[$task]}"
         max_rollout_steps="${TASK_MAX_ROLLOUT_STEPS[$task]}"
         rollout_after_success="${TASK_ROLLOUT_AFTER_SUCCESS[$task]}"
 

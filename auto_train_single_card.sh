@@ -11,7 +11,7 @@ print(shlex.join(sys.argv[1:]))
 PY
 }
 
-# 单卡训练命令
+# 单卡训练命令（默认启用）
 TRAIN_COMMAND_PARTS=(
     python
     -m
@@ -27,12 +27,35 @@ TRAIN_COMMAND_PARTS=(
     training.steps_per_epoch=-1
     training.save_per_epoch=1000
     wandb.project=multi-task-rgbd-skill-low-smalldot
+    wandb.mode=online
     training.gpu_id=0
     randomness=low
     dryrun=false
 )
-# # 多卡训练命令
+
+# 多卡训练命令（启用时：注释掉上面的单卡块，再取消下面块的注释）
 # TRAIN_COMMAND_PARTS=(
+#     CUDA_VISIBLE_DEVICES=0,1
+#     torchrun
+#     --standalone
+#     --nproc_per_node=2
+#     -m
+#     src.train.bc_ddp
+#     +experiment=rgbd/diff_unet
+#     "task=[one_leg,round_table,lamp]"
+#     data.demo_source=rollout
+#     data.data_subset=500
+#     data.demo_outcome=success
+#     data.suffix=rgbd-skill
+#     training.batch_size=256
+#     training.num_epochs=3000
+#     training.steps_per_epoch=-1
+#     training.save_per_epoch=500
+#     wandb.project=multi-task-rgbd-skill-low-500
+#     wandb.mode=online
+#     randomness=low
+#     dryrun=false
+#     training.num_epochs=4000
 # )
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="230"
@@ -284,6 +307,8 @@ if not command:
 
 if re.search(r'(^|\s)training\.gpu_id=\S+', command):
     updated = re.sub(r'(^|\s)training\.gpu_id=\S+', rf'\1training.gpu_id={gpu_id}', command, count=1)
+elif re.search(r'(^|\s)torchrun(\s|$)', command):
+    updated = command
 else:
     updated = f"{command} training.gpu_id={gpu_id}"
 

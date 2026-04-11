@@ -12,6 +12,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# 单卡训练命令
 $global:TRAIN_COMMAND_PARTS = @(
     "python",
     "-m",
@@ -27,11 +28,37 @@ $global:TRAIN_COMMAND_PARTS = @(
     "training.steps_per_epoch=-1",
     "training.save_per_epoch=1000",
     "wandb.project=multi-task-rgbd-skill-low",
+    "wandb.mode=online",
     "training.gpu_id=7",
     "randomness=low",
     "dryrun=false",
     "wandb.continue_run_id=e56mvprj"
 )
+
+# 多卡训练命令
+# $global:TRAIN_COMMAND_PARTS = @(
+#     "CUDA_VISIBLE_DEVICES=0,1",
+#     "torchrun",
+#     "--standalone",
+#     "--nproc_per_node=2",
+#     "-m",
+#     "src.train.bc_ddp",
+#     "+experiment=rgbd/diff_unet",
+#     "task=[one_leg,round_table,lamp]",
+#     "data.demo_source=rollout",
+#     "data.data_subset=500",
+#     "data.demo_outcome=success",
+#     "data.suffix=rgbd-skill",
+#     "training.batch_size=256",
+#     "training.num_epochs=3000",
+#     "training.steps_per_epoch=-1",
+#     "training.save_per_epoch=500",
+#     "wandb.project=multi-task-rgbd-skill-low-500",
+#     "wandb.mode=online",
+#     "randomness=low",
+#     "dryrun=false",
+#     "training.num_epochs=4000"
+# )
 $global:TRAIN_COMMAND = [string]::Join(' ', ($global:TRAIN_COMMAND_PARTS | ForEach-Object {
     if ($_ -match '[\s"]') {
         '"' + ($_ -replace '"', '\"') + '"'
@@ -312,6 +339,10 @@ function Prepare-TrainCommand {
 
     if ($command -match '(^|\s)training\.gpu_id=\S+') {
         return [regex]::Replace($command, '(^|\s)training\.gpu_id=\S+', "`$1training.gpu_id=$GpuId", 1)
+    }
+
+    if ($command -match '(^|\s)torchrun(\s|$)') {
+        return $command
     }
 
     return "$command training.gpu_id=$GpuId"
