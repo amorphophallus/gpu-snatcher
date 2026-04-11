@@ -12,39 +12,45 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# 单卡训练命令
+function ConvertTo-CommandString {
+    param([string[]]$Parts)
+
+    return [string]::Join(' ', ($Parts | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"' + ($_ -replace '"', '\"') + '"'
+        } else {
+            $_
+        }
+    }))
+}
+
+# Multi-card training command.
 $global:TRAIN_COMMAND_PARTS = @(
-    "python",
+    "torchrun",
+    "--standalone",
+    "--nproc_per_node=2",
     "-m",
-    "src.train.bc",
+    "src.train.bc_ddp",
     "+experiment=rgbd/diff_unet",
     "task=[one_leg,round_table,lamp]",
     "data.demo_source=rollout",
+    "data.data_subset=500",
     "data.demo_outcome=success",
     "data.suffix=rgbd-skill",
-    "data.data_subset=50",
     "training.batch_size=256",
-    "training.num_epochs=4000",
+    "training.num_epochs=3000",
     "training.steps_per_epoch=-1",
-    "training.save_per_epoch=1000",
-    "wandb.project=multi-task-rgbd-skill-low",
+    "training.save_per_epoch=500",
+    "wandb.project=multi-task-rgbd-skill-low-500",
     "wandb.mode=online",
-    "training.gpu_id=7",
     "randomness=low",
     "dryrun=false",
-    "wandb.continue_run_id=e56mvprj"
+    "training.num_epochs=4000"
 )
-
-# 多卡训练命令
-$global:TRAIN_COMMAND = [string]::Join(' ', ($global:TRAIN_COMMAND_PARTS | ForEach-Object {
-    if ($_ -match '[\s"]') {
-        '"' + ($_ -replace '"', '\"') + '"'
-    } else {
-        $_
-    }
-}))
+$global:TRAIN_COMMAND = ConvertTo-CommandString -Parts $global:TRAIN_COMMAND_PARTS
 $global:SSH_NAME = "230"
-$global:GPU_ID = "0"
+$global:NUM_GPUs = 2
+$global:GPU_ID = "0,1"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
 $global:DATA_DIR_PROCESSED = ""
@@ -75,6 +81,35 @@ function ConvertTo-SshArgumentString {
     }
 
     return ($quoted -join ' ')
+}
+
+function Split-CommandTokens {
+    param([string]$Command)
+
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        return @()
+    }
+
+    $tokens = [regex]::Matches($Command.Trim(), '(?:"(?:\\.|[^"])*"|''(?:\\.|[^''])*''|\S+)') | ForEach-Object Value
+    $parts = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($token in $tokens) {
+        if ((($token.StartsWith('"')) -and $token.EndsWith('"')) -or (($token.StartsWith("'")) -and $token.EndsWith("'"))) {
+            $parts.Add($token.Substring(1, $token.Length - 2))
+        } else {
+            $parts.Add($token)
+        }
+    }
+
+    return @($parts)
+}
+
+function Test-IsLeadingEnvAssignment {
+    param([string]$Token)
+
+    return ($Token -match '^[A-Za-z_][A-Za-z0-9_]*=.*$') -and
+        (-not $Token.StartsWith('/')) -and
+        (-not $Token.StartsWith('./'))
 }
 
 function Get-ZjuHostsFromSshConfig {
@@ -162,111 +197,20 @@ function Invoke-SshCommand {
     }
 }
 
-function Find-FirstFreeGpu {
-    $candidates = [System.Collections.Generic.List[object]]::new()
-    $fastSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $slowSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+function Get-HostGpuInventory {
+    param([string]$HostAlias)
 
-    foreach ($serverId in $FAST_SERVER) {
-        if (-not [string]::IsNullOrWhiteSpace($serverId)) {
-            [void]$fastSet.Add(([string]$serverId).Trim())
-        }
-    }
-
-    foreach ($serverId in $SLOW_SERVER) {
-        if (-not [string]::IsNullOrWhiteSpace($serverId)) {
-            [void]$slowSet.Add(([string]$serverId).Trim())
-        }
-    }
-
-    foreach ($hostAlias in (Get-ZjuHostsFromSshConfig -Path $SshConfigPath)) {
-        if ([string]::IsNullOrWhiteSpace($hostAlias)) {
-            continue
-        }
-
-        $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
-        if ($result.ExitCode -ne 0) {
-            continue
-        }
-
-        foreach ($line in ($result.Output -split "`r?`n")) {
-            if ([string]::IsNullOrWhiteSpace($line)) {
-                continue
-            }
-
-            $parts = $line -split '\s*,\s*'
-            if ($parts.Count -lt 4) {
-                continue
-            }
-
-            $gpuId = [int]$parts[0]
-            $memoryTotal = [double]$parts[1]
-            $memoryUsed = [double]$parts[2]
-            $gpuUtil = [double]$parts[3]
-            $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
-
-            if ($usageRatio -lt $MemoryUsageThreshold) {
-                $suffix = ''
-                $hostNum = 0
-                if ($hostAlias -match '([0-9]+)$') {
-                    $suffix = $Matches[1]
-                    $hostNum = [int]$suffix
-                }
-
-                $priority = 1
-                if ($suffix -and $fastSet.Contains($suffix)) {
-                    $priority = 0
-                } elseif ($suffix -and $slowSet.Contains($suffix)) {
-                    $priority = 2
-                }
-
-                $candidates.Add([pscustomobject]@{
-                    HostAlias  = $hostAlias
-                    GpuId      = $gpuId
-                    GpuUtil    = $gpuUtil
-                    MemoryUsed = $memoryUsed
-                    Priority   = $priority
-                    HostNum    = $hostNum
-                })
-            }
-        }
-    }
-
-    if ($candidates.Count -gt 0) {
-        return $candidates |
-            Sort-Object `
-                @{ Expression = { $_.GpuUtil } }, `
-                @{ Expression = { $_.MemoryUsed } }, `
-                @{ Expression = { $_.Priority } }, `
-                @{ Expression = { $_.HostNum }; Descending = $true }, `
-                @{ Expression = { $_.HostAlias } }, `
-                @{ Expression = { $_.GpuId } } |
-            Select-Object -First 1
-    }
-
-    return $null
-}
-
-function Find-PreferredGpuOrError {
-    param(
-        [string]$SshNameValue,
-        [string]$GpuIdText
-    )
-
-    if ($GpuIdText -notmatch '^\d+$') {
-        [Console]::Error.WriteLine("GPU_ID must be a non-negative integer, got '$GpuIdText'.")
-        return $null
-    }
-
-    $hostAlias = "zju_4090_$SshNameValue"
-    $targetGpuId = [int]$GpuIdText
-    $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
-
+    $result = Invoke-SshCommand -HostAlias $HostAlias -RemoteCommand 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
     if ($result.ExitCode -ne 0) {
-        [Console]::Error.WriteLine("Preferred host '$hostAlias' is unreachable: $($result.Output)")
-        return $null
+        return [pscustomobject]@{
+            HostAlias = $HostAlias
+            State     = 'DOWN'
+            Note      = $result.Output
+            Gpus      = @()
+        }
     }
 
+    $gpus = [System.Collections.Generic.List[object]]::new()
     foreach ($line in ($result.Output -split "`r?`n")) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
@@ -277,70 +221,292 @@ function Find-PreferredGpuOrError {
             continue
         }
 
-        $gpuId = [int]$parts[0]
-        if ($gpuId -ne $targetGpuId) {
-            continue
-        }
-
         $memoryTotal = [double]$parts[1]
         $memoryUsed = [double]$parts[2]
         $gpuUtil = [double]$parts[3]
         $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
-        $usagePercent = [math]::Round($usageRatio * 100, 1)
-        $thresholdPercent = [math]::Round($MemoryUsageThreshold * 100, 1)
+        $status = if ($usageRatio -lt $MemoryUsageThreshold) { 'FREE' } else { 'BUSY' }
 
-        if ($usageRatio -ge $MemoryUsageThreshold) {
-            [Console]::Error.WriteLine("Preferred GPU not available: $hostAlias GPU$targetGpuId memory usage $usagePercent% >= threshold $thresholdPercent% (gpu util $([math]::Round($gpuUtil, 0))%).")
-            return $null
+        $gpus.Add([pscustomobject]@{
+            GpuId        = [int]$parts[0]
+            Status       = $status
+            MemoryUsed   = $memoryUsed
+            MemoryTotal  = $memoryTotal
+            UsagePercent = [math]::Round($usageRatio * 100, 1)
+            GpuUtil      = $gpuUtil
+        })
+    }
+
+    return [pscustomobject]@{
+        HostAlias = $HostAlias
+        State     = 'OK'
+        Note      = ''
+        Gpus      = @($gpus)
+    }
+}
+
+function Normalize-GpuIdList {
+    param([string]$GpuIdText)
+
+    if ([string]::IsNullOrWhiteSpace($GpuIdText)) {
+        return @()
+    }
+
+    $seen = [System.Collections.Generic.HashSet[int]]::new()
+    $result = [System.Collections.Generic.List[int]]::new()
+
+    foreach ($rawPart in ($GpuIdText -split ',')) {
+        $part = $rawPart.Trim()
+        if (-not $part) {
+            throw "GPU_ID must be a comma-separated list of non-negative integers without empty items."
+        }
+        if ($part -notmatch '^\d+$') {
+            throw "GPU_ID entries must be non-negative integers, got '$part'."
         }
 
+        $value = [int]$part
+        if (-not $seen.Add($value)) {
+            throw "GPU_ID contains a duplicate entry: $value."
+        }
+
+        $result.Add($value)
+    }
+
+    return @($result)
+}
+
+function Get-HostPriority {
+    param([string]$HostAlias)
+
+    $suffix = ''
+    if ($HostAlias -match '([0-9]+)$') {
+        $suffix = $Matches[1]
+    }
+
+    if ($suffix -and ($FAST_SERVER -contains $suffix)) {
+        return 0
+    }
+    if ($suffix -and ($SLOW_SERVER -contains $suffix)) {
+        return 2
+    }
+
+    return 1
+}
+
+function Get-HostNumber {
+    param([string]$HostAlias)
+
+    if ($HostAlias -match '([0-9]+)$') {
+        return [int]$Matches[1]
+    }
+
+    return -1
+}
+
+function Get-SortedHostAliases {
+    return @(
+        Get-ZjuHostsFromSshConfig -Path $SshConfigPath |
+            Sort-Object `
+                @{ Expression = { Get-HostPriority -HostAlias $_ } }, `
+                @{ Expression = { Get-HostNumber -HostAlias $_ }; Descending = $true }, `
+                @{ Expression = { $_ } }
+    )
+}
+
+function Select-MultiGpuTargetOnHost {
+    param(
+        [string]$HostAlias,
+        [int]$NumGpus,
+        [int[]]$PreferredGpuIds = @()
+    )
+
+    $inventory = Get-HostGpuInventory -HostAlias $HostAlias
+    if ($inventory.State -ne 'OK') {
         return [pscustomobject]@{
-            HostAlias  = $hostAlias
-            GpuId      = $gpuId
-            GpuUtil    = $gpuUtil
-            MemoryUsed = $memoryUsed
+            Status    = 'DOWN'
+            HostAlias = $HostAlias
+            Note      = $inventory.Note
         }
     }
 
-    [Console]::Error.WriteLine("Preferred GPU not found on host '$hostAlias': GPU$targetGpuId.")
+    $reportedGpuIds = @($inventory.Gpus | Sort-Object GpuId | ForEach-Object { $_.GpuId })
+    $freeGpus = @($inventory.Gpus | Where-Object { $_.Status -eq 'FREE' })
+    $selected = @()
+
+    if ($PreferredGpuIds.Count -gt 0) {
+        $freeMap = @{}
+        foreach ($gpu in $freeGpus) {
+            $freeMap[$gpu.GpuId] = $gpu
+        }
+
+        $preferredSelection = [System.Collections.Generic.List[object]]::new()
+        foreach ($gpuId in $PreferredGpuIds) {
+            if ($freeMap.ContainsKey($gpuId)) {
+                $preferredSelection.Add($freeMap[$gpuId])
+                if ($preferredSelection.Count -eq $NumGpus) {
+                    break
+                }
+            }
+        }
+
+        if ($preferredSelection.Count -ge $NumGpus) {
+            $selected = @($preferredSelection | Select-Object -First $NumGpus)
+        }
+    }
+
+    if ($selected.Count -lt $NumGpus) {
+        $selected = @($freeGpus | Sort-Object GpuUtil, MemoryUsed, GpuId | Select-Object -First $NumGpus)
+    }
+
+    if ($selected.Count -lt $NumGpus) {
+        return [pscustomobject]@{
+            Status        = 'INSUFFICIENT'
+            HostAlias     = $HostAlias
+            FreeCount     = $freeGpus.Count
+            RequiredCount = $NumGpus
+        }
+    }
+
+    return [pscustomobject]@{
+        Status    = 'OK'
+        HostAlias = $HostAlias
+        GpuIds    = @($selected | ForEach-Object { $_.GpuId })
+        FreeCount = $freeGpus.Count
+    }
+}
+
+function Find-MultiGpuTargetOrError {
+    param(
+        [string]$SshNameValue,
+        [int]$NumGpus,
+        [int[]]$PreferredGpuIds = @()
+    )
+
+    if ($NumGpus -le 0) {
+        [Console]::Error.WriteLine("NUM_GPUs must be a positive integer, got '$NumGpus'.")
+        return $null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SshNameValue)) {
+        $hostAlias = "zju_4090_$SshNameValue"
+        $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds $PreferredGpuIds
+
+        switch ($selection.Status) {
+            'OK' {
+                return $selection
+            }
+            'DOWN' {
+                [Console]::Error.WriteLine("Preferred host '$hostAlias' is unreachable: $($selection.Note)")
+                return $null
+            }
+            'INSUFFICIENT' {
+                [Console]::Error.WriteLine("Host '$hostAlias' has only $($selection.FreeCount) free GPUs; need $($selection.RequiredCount).")
+                return $null
+            }
+            default {
+                [Console]::Error.WriteLine("Failed to select GPUs on host '$hostAlias'.")
+                return $null
+            }
+        }
+    }
+
+    foreach ($hostAlias in (Get-SortedHostAliases)) {
+        $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds @()
+        if ($selection.Status -eq 'OK') {
+            return $selection
+        }
+    }
+
+    [Console]::Error.WriteLine("No reachable server has $NumGpus free GPUs.")
     return $null
 }
 
 function Prepare-TrainCommand {
-    param([int]$GpuId)
+    param(
+        [int]$NumGpus,
+        [string]$GpuIdsCsv
+    )
 
-    $command = $TRAIN_COMMAND.Trim()
-    if (-not $command) {
+    $parts = Split-CommandTokens -Command $TRAIN_COMMAND
+    if ($parts.Count -eq 0) {
         throw "TRAIN_COMMAND is empty."
     }
 
-    if ($command -match '(^|\s)training\.gpu_id=\S+') {
-        return [regex]::Replace($command, '(^|\s)training\.gpu_id=\S+', "`$1training.gpu_id=$GpuId", 1)
+    $envParts = [System.Collections.Generic.List[string]]::new()
+    $index = 0
+    while ($index -lt $parts.Count -and (Test-IsLeadingEnvAssignment -Token $parts[$index])) {
+        $key = $parts[$index].Split('=', 2)[0]
+        if ($key -ne 'CUDA_VISIBLE_DEVICES') {
+            $envParts.Add($parts[$index])
+        }
+        $index += 1
     }
 
-    return "$command training.gpu_id=$GpuId"
+    if ($index -ge $parts.Count) {
+        throw "TRAIN_COMMAND must start with torchrun for auto_train_multi_card."
+    }
+
+    $commandParts = @($parts[$index..($parts.Count - 1)])
+    if ([System.IO.Path]::GetFileName($commandParts[0]) -ne 'torchrun') {
+        throw "TRAIN_COMMAND must start with torchrun for auto_train_multi_card."
+    }
+
+    $filteredParts = [System.Collections.Generic.List[string]]::new()
+    $cursor = 0
+    while ($cursor -lt $commandParts.Count) {
+        $token = $commandParts[$cursor]
+        if ($token -match '^training\.gpu_id=\S+$') {
+            $cursor += 1
+            continue
+        }
+        if ($token -eq 'training.gpu_id') {
+            if ($cursor + 1 -lt $commandParts.Count) {
+                $cursor += 2
+            } else {
+                $cursor += 1
+            }
+            continue
+        }
+        if ($token -eq '--nproc_per_node') {
+            if ($cursor + 1 -lt $commandParts.Count) {
+                $cursor += 2
+            } else {
+                $cursor += 1
+            }
+            continue
+        }
+        if ($token -like '--nproc_per_node=*') {
+            $cursor += 1
+            continue
+        }
+
+        $filteredParts.Add($token)
+        $cursor += 1
+    }
+
+    $finalParts = [System.Collections.Generic.List[string]]::new()
+    $finalParts.Add("CUDA_VISIBLE_DEVICES=$GpuIdsCsv")
+    foreach ($envPart in $envParts) {
+        $finalParts.Add($envPart)
+    }
+    $finalParts.Add($filteredParts[0])
+    $finalParts.Add("--nproc_per_node=$NumGpus")
+    for ($i = 1; $i -lt $filteredParts.Count; $i++) {
+        $finalParts.Add($filteredParts[$i])
+    }
+
+    return ConvertTo-CommandString -Parts @($finalParts)
 }
 
 function Get-CommandName {
     param([string]$Command)
 
-    if ([string]::IsNullOrWhiteSpace($Command)) {
-        return 'unknown'
-    }
-
-    $tokens = [regex]::Matches($Command.Trim(), '(?:"(?:\\.|[^"])*"|''(?:\\.|[^''])*''|\S+)') | ForEach-Object Value
     $parts = [System.Collections.Generic.List[string]]::new()
-
-    foreach ($token in $tokens) {
-        $clean = $token.Trim("'`"")
-        $parts.Add($clean)
+    foreach ($token in (Split-CommandTokens -Command $Command)) {
+        $parts.Add($token)
     }
 
-    while ($parts.Count -gt 0 -and $parts[0].Contains('=') -and -not $parts[0].StartsWith('/') -and -not $parts[0].StartsWith('./')) {
-        $key = $parts[0].Split('=', 2)[0]
-        if ($key -notmatch '^[A-Za-z0-9_]+$') {
-            break
-        }
+    while ($parts.Count -gt 0 -and (Test-IsLeadingEnvAssignment -Token $parts[0])) {
         $parts.RemoveAt(0)
     }
 
@@ -543,8 +709,8 @@ function Write-StructuredStatus {
     param(
         [string]$Status,
         [string]$Server,
-        [int]$GpuId,
-        [double]$GpuUtil,
+        [int]$NumGpus,
+        [string]$GpuIds,
         [string]$TmuxName,
         [string]$CommandName,
         [string]$WandbRunName,
@@ -553,8 +719,8 @@ function Write-StructuredStatus {
 
     Write-Host "status: $Status"
     Write-Host "server: $Server"
-    Write-Host "gpu_id: $GpuId"
-    Write-Host "gpu_util: $([math]::Round($GpuUtil, 0))"
+    Write-Host "num_gpus: $NumGpus"
+    Write-Host "gpu_ids: $GpuIds"
     Write-Host "tmux_name: $TmuxName"
     Write-Host "command_name: $CommandName"
     Write-Host "wandb_run_name: $WandbRunName"
@@ -568,21 +734,26 @@ if ([string]::IsNullOrWhiteSpace(($TRAIN_COMMAND -replace '\s', ''))) {
     exit 1
 }
 
-$selection = $null
-if (-not [string]::IsNullOrWhiteSpace(($SSH_NAME -replace '\s', '')) -and -not [string]::IsNullOrWhiteSpace(($GPU_ID -replace '\s', ''))) {
-    $selection = Find-PreferredGpuOrError -SshNameValue $SSH_NAME -GpuIdText $GPU_ID
-    if ($null -eq $selection) {
-        exit 1
-    }
-} else {
-    $selection = Find-FirstFreeGpu
-    if ($null -eq $selection) {
-        [Console]::Error.WriteLine("No reachable free GPU found.")
-        exit 1
-    }
+$requestedGpuCount = 0
+if (-not [int]::TryParse([string]$NUM_GPUs, [ref]$requestedGpuCount) -or $requestedGpuCount -le 0) {
+    [Console]::Error.WriteLine("NUM_GPUs must be a positive integer, got '$NUM_GPUs'.")
+    exit 1
 }
 
-$preparedCommand = Prepare-TrainCommand -GpuId $selection.GpuId
+try {
+    $preferredGpuIds = @(Normalize-GpuIdList -GpuIdText $GPU_ID)
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+
+$selection = Find-MultiGpuTargetOrError -SshNameValue $SSH_NAME -NumGpus $requestedGpuCount -PreferredGpuIds $preferredGpuIds
+if ($null -eq $selection) {
+    exit 1
+}
+
+$gpuIdsCsv = $selection.GpuIds -join ','
+$preparedCommand = Prepare-TrainCommand -NumGpus $requestedGpuCount -GpuIdsCsv $gpuIdsCsv
 $commandName = Get-CommandName -Command $preparedCommand
 $sessionName = Get-AvailableTmuxSessionName -HostAlias $selection.HostAlias
 $startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED
@@ -602,8 +773,8 @@ while ($true) {
         Write-StructuredStatus `
             -Status 'timeout' `
             -Server $selection.HostAlias `
-            -GpuId $selection.GpuId `
-            -GpuUtil $selection.GpuUtil `
+            -NumGpus $requestedGpuCount `
+            -GpuIds $gpuIdsCsv `
             -TmuxName $sessionName `
             -CommandName $commandName `
             -WandbRunName '-' `
@@ -617,8 +788,8 @@ while ($true) {
         Write-StructuredStatus `
             -Status 'timeout' `
             -Server $selection.HostAlias `
-            -GpuId $selection.GpuId `
-            -GpuUtil $selection.GpuUtil `
+            -NumGpus $requestedGpuCount `
+            -GpuIds $gpuIdsCsv `
             -TmuxName $sessionName `
             -CommandName $commandName `
             -WandbRunName '-' `
@@ -646,8 +817,8 @@ while ($true) {
         Write-StructuredStatus `
             -Status 'failed' `
             -Server $selection.HostAlias `
-            -GpuId $selection.GpuId `
-            -GpuUtil $selection.GpuUtil `
+            -NumGpus $requestedGpuCount `
+            -GpuIds $gpuIdsCsv `
             -TmuxName $sessionName `
             -CommandName $commandName `
             -WandbRunName '-' `
@@ -659,8 +830,8 @@ while ($true) {
         Write-StructuredStatus `
             -Status 'timeout' `
             -Server $selection.HostAlias `
-            -GpuId $selection.GpuId `
-            -GpuUtil $selection.GpuUtil `
+            -NumGpus $requestedGpuCount `
+            -GpuIds $gpuIdsCsv `
             -TmuxName $sessionName `
             -CommandName $commandName `
             -WandbRunName '-' `
@@ -672,8 +843,8 @@ while ($true) {
 Write-StructuredStatus `
     -Status 'started' `
     -Server $selection.HostAlias `
-    -GpuId $selection.GpuId `
-    -GpuUtil $selection.GpuUtil `
+    -NumGpus $requestedGpuCount `
+    -GpuIds $gpuIdsCsv `
     -TmuxName $sessionName `
     -CommandName $commandName `
     -WandbRunName $wandbRunName `

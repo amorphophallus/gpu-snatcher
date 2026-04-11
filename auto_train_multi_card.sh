@@ -11,32 +11,33 @@ print(shlex.join(sys.argv[1:]))
 PY
 }
 
-# 单卡训练命令（默认启用）
+# Multi-card training command.
 TRAIN_COMMAND_PARTS=(
-    python
+    torchrun
+    --standalone
+    --nproc_per_node=2
     -m
-    src.train.bc
+    src.train.bc_ddp
     +experiment=rgbd/diff_unet
     "task=[one_leg,round_table,lamp]"
     data.demo_source=rollout
+    data.data_subset=500
     data.demo_outcome=success
     data.suffix=rgbd-skill
-    data.data_subset=50
     training.batch_size=256
-    training.num_epochs=5000
+    training.num_epochs=3000
     training.steps_per_epoch=-1
-    training.save_per_epoch=1000
-    wandb.project=multi-task-rgbd-skill-low-smalldot
+    training.save_per_epoch=500
+    wandb.project=multi-task-rgbd-skill-low-500
     wandb.mode=online
-    training.gpu_id=0
     randomness=low
     dryrun=false
+    training.num_epochs=4000
 )
-
-# 多卡训练命令（启用时：注释掉上面的单卡块，再取消下面块的注释）
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="230"
-GPU_ID="0"
+NUM_GPUS="2"
+GPU_ID="0,1"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240)
@@ -152,142 +153,246 @@ PY
     done <<< "$query_output"
 }
 
-find_first_free_gpu() {
-    local host_alias
-    local line
-    local candidates=()
-    local fast_csv slow_csv
+normalize_gpu_id_list() {
+    python3 - "$1" <<'PY'
+import sys
+
+text = sys.argv[1]
+if not text.strip():
+    print("")
+    raise SystemExit(0)
+
+seen = set()
+normalized = []
+for raw_part in text.split(","):
+    part = raw_part.strip()
+    if not part:
+        raise SystemExit("GPU_ID must be a comma-separated list of non-negative integers without empty items.")
+    if not part.isdigit():
+        raise SystemExit(f"GPU_ID entries must be non-negative integers, got '{part}'.")
+
+    value = int(part)
+    if value in seen:
+        raise SystemExit(f"GPU_ID contains a duplicate entry: {value}.")
+
+    seen.add(value)
+    normalized.append(str(value))
+
+print(",".join(normalized))
+PY
+}
+
+list_hosts_by_priority() {
+    local fast_csv
+    local slow_csv
+
     fast_csv="$(IFS=,; echo "${FAST_SERVER[*]}")"
     slow_csv="$(IFS=,; echo "${SLOW_SERVER[*]}")"
 
-    while IFS= read -r host_alias; do
-        [[ -z "$host_alias" ]] && continue
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            IFS='|' read -r row_type row_host field1 field2 field3 _field4 _field5 field6 <<< "$line"
-            if [[ "$row_type" == "GPU" && "$field2" == "FREE" ]]; then
-                candidates+=("${row_host}|${field1}|${field6}|${field3}")
-            fi
-        done < <(get_host_gpu_status "$host_alias")
-    done < <(get_hosts_from_ssh_config)
-
-    if [[ ${#candidates[@]} -gt 0 ]]; then
-        printf '%s\n' "${candidates[@]}" |
-            awk -F'|' -v fast_csv="$fast_csv" -v slow_csv="$slow_csv" '
-                BEGIN {
-                    split(fast_csv, fast_arr, ",")
-                    split(slow_csv, slow_arr, ",")
-                    for (i in fast_arr) if (fast_arr[i] != "") fast_map[fast_arr[i]] = 1
-                    for (i in slow_arr) if (slow_arr[i] != "") slow_map[slow_arr[i]] = 1
-                }
-                {
-                    host_num = 0
-                    suffix = ""
-                    if (match($1, /[0-9]+$/)) {
-                        suffix = substr($1, RSTART, RLENGTH)
-                        host_num = suffix + 0
-                    }
-
-                    priority = 1
-                    if (suffix in fast_map) {
-                        priority = 0
-                    } else if (suffix in slow_map) {
-                        priority = 2
-                    }
-
-                    print $0 "|" priority "|" host_num
-                }
-            ' |
-            sort -t'|' -k3,3n -k4,4n -k5,5n -k6,6nr -k1,1 -k2,2n |
-            head -n 1 |
-            cut -d'|' -f1-4
-        return 0
-    fi
-
-    return 1
-}
-
-find_preferred_gpu_or_error() {
-    local ssh_name="$1"
-    local gpu_id_text="$2"
-    local host_alias="zju_4090_${ssh_name}"
-    local selected
-    local host_state="DOWN"
-    local host_note=""
-    local line
-    local -a seen_gpu_ids=()
-
-    if [[ ! "$gpu_id_text" =~ ^[0-9]+$ ]]; then
-        echo "GPU_ID must be a non-negative integer, got '$gpu_id_text'." >&2
-        return 1
-    fi
-
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        IFS='|' read -r row_type row_host field1 field2 field3 _field4 field5 field6 <<< "$line"
-        if [[ "$row_type" == "HOST" ]]; then
-            host_state="$field1"
-            host_note="$field2"
-            continue
-        fi
-
-        if [[ "$row_type" != "GPU" ]]; then
-            continue
-        fi
-
-        seen_gpu_ids+=("$field1")
-        if [[ "$field1" != "$gpu_id_text" ]]; then
-            continue
-        fi
-
-        if [[ "$field2" != "FREE" ]]; then
-            echo "Preferred GPU not available: ${host_alias} GPU${gpu_id_text} memory usage ${field5}% >= threshold $(python3 - "$MEMORY_USAGE_THRESHOLD" <<'PY'
-import sys
-print(round(float(sys.argv[1]) * 100, 1))
-PY
-)% (gpu util ${field6}%)." >&2
-            return 1
-        fi
-
-        selected="${row_host}|${field1}|${field6}|${field3}"
-    done < <(get_host_gpu_status "$host_alias")
-
-    if [[ "$host_state" != "OK" ]]; then
-        echo "Preferred host '$host_alias' is unreachable: $host_note" >&2
-        return 1
-    fi
-
-    if [[ -z "$selected" ]]; then
-        local available_gpu_ids
-        if [[ ${#seen_gpu_ids[@]} -gt 0 ]]; then
-            available_gpu_ids="$(IFS=', '; printf '%s' "${seen_gpu_ids[*]}")"
-        else
-            available_gpu_ids="none"
-        fi
-        echo "Preferred GPU not found on host '$host_alias': GPU${gpu_id_text}. Available GPU IDs reported by nvidia-smi: ${available_gpu_ids}. GPU IDs are 0-based." >&2
-        return 1
-    fi
-
-    printf '%s\n' "$selected"
-}
-
-prepare_train_command() {
-    python3 - "$TRAIN_COMMAND" "$1" <<'PY'
+    get_hosts_from_ssh_config | python3 - "$fast_csv" "$slow_csv" <<'PY'
 import re
 import sys
 
+fast = {item for item in sys.argv[1].split(",") if item}
+slow = {item for item in sys.argv[2].split(",") if item}
+hosts = [line.strip() for line in sys.stdin if line.strip()]
+
+def sort_key(host):
+    match = re.search(r"(\d+)$", host)
+    suffix = match.group(1) if match else ""
+    host_num = int(suffix) if suffix else -1
+    priority = 1
+    if suffix in fast:
+        priority = 0
+    elif suffix in slow:
+        priority = 2
+    return (priority, -host_num, host)
+
+for host in sorted(dict.fromkeys(hosts), key=sort_key):
+    print(host)
+PY
+}
+
+select_gpus_on_host() {
+    local host_alias="$1"
+    local num_gpus="$2"
+    local preferred_gpu_csv="${3:-}"
+
+    python3 - "$host_alias" "$num_gpus" "$preferred_gpu_csv" <<'PY'
+import sys
+
+host_alias = sys.argv[1]
+num_gpus = int(sys.argv[2])
+preferred_gpu_csv = sys.argv[3]
+
+host_state = "DOWN"
+host_note = ""
+reported_gpu_ids = []
+free_gpus = {}
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+
+    parts = line.split("|")
+    row_type = parts[0]
+    if row_type == "HOST":
+        host_state = parts[2]
+        host_note = parts[3] if len(parts) > 3 else ""
+        continue
+
+    if row_type != "GPU":
+        continue
+
+    gpu_id = int(parts[2])
+    reported_gpu_ids.append(gpu_id)
+    if parts[3] != "FREE":
+        continue
+
+    free_gpus[gpu_id] = {
+        "id": gpu_id,
+        "used": float(parts[4]),
+        "util": float(parts[7]),
+    }
+
+if host_state != "OK":
+    print(f"DOWN|{host_alias}|{host_note}")
+    raise SystemExit(0)
+
+preferred_gpu_ids = []
+if preferred_gpu_csv.strip():
+    preferred_gpu_ids = [int(item) for item in preferred_gpu_csv.split(",") if item]
+
+selected_gpu_ids = []
+if preferred_gpu_ids:
+    for gpu_id in preferred_gpu_ids:
+        if gpu_id in free_gpus:
+            selected_gpu_ids.append(gpu_id)
+            if len(selected_gpu_ids) == num_gpus:
+                break
+
+if len(selected_gpu_ids) < num_gpus:
+    sorted_free_gpus = sorted(free_gpus.values(), key=lambda item: (item["util"], item["used"], item["id"]))
+    selected_gpu_ids = [item["id"] for item in sorted_free_gpus[:num_gpus]]
+
+if len(selected_gpu_ids) < num_gpus:
+    print(f"INSUFFICIENT|{host_alias}|{len(free_gpus)}|{num_gpus}")
+    raise SystemExit(0)
+
+gpu_ids_csv = ",".join(str(gpu_id) for gpu_id in selected_gpu_ids)
+gpu_utils_csv = ",".join(str(int(round(free_gpus[gpu_id]["util"]))) for gpu_id in selected_gpu_ids)
+print(f"OK|{host_alias}|{gpu_ids_csv}|{gpu_utils_csv}|{len(free_gpus)}")
+PY
+}
+
+find_multi_gpu_target_or_error() {
+    local ssh_name="$1"
+    local num_gpus="$2"
+    local preferred_gpu_csv="$3"
+    local host_alias
+    local selection_result
+    local status
+    local field2
+    local field3
+
+    if [[ ! "$num_gpus" =~ ^[1-9][0-9]*$ ]]; then
+        echo "NUM_GPUS must be a positive integer, got '$num_gpus'." >&2
+        return 1
+    fi
+
+    if [[ -n "${ssh_name// }" ]]; then
+        host_alias="zju_4090_${ssh_name}"
+        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "$preferred_gpu_csv")"
+        IFS='|' read -r status _ field2 field3 _ <<< "$selection_result"
+
+        case "$status" in
+            OK)
+                printf '%s\n' "$selection_result"
+                return 0
+                ;;
+            DOWN)
+                echo "Preferred host '$host_alias' is unreachable: $field2" >&2
+                return 1
+                ;;
+            INSUFFICIENT)
+                echo "Host '$host_alias' has only $field2 free GPUs; need $field3." >&2
+                return 1
+                ;;
+            *)
+                echo "Failed to select GPUs on host '$host_alias'." >&2
+                return 1
+                ;;
+        esac
+    fi
+
+    while IFS= read -r host_alias; do
+        [[ -z "$host_alias" ]] && continue
+        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "")"
+        IFS='|' read -r status _ _ _ _ <<< "$selection_result"
+        if [[ "$status" == "OK" ]]; then
+            printf '%s\n' "$selection_result"
+            return 0
+        fi
+    done < <(list_hosts_by_priority)
+
+    echo "No reachable server has ${num_gpus} free GPUs." >&2
+    return 1
+}
+
+prepare_train_command() {
+    python3 - "$TRAIN_COMMAND" "$1" "$2" <<'PY'
+import os
+import re
+import shlex
+import sys
+
 command = sys.argv[1].strip()
-gpu_id = sys.argv[2]
+gpu_ids_csv = sys.argv[2]
+num_gpus = sys.argv[3]
 
 if not command:
     raise SystemExit("TRAIN_COMMAND is empty.")
 
-if re.search(r'(^|\s)training\.gpu_id=\S+', command):
-    updated = re.sub(r'(^|\s)training\.gpu_id=\S+', rf'\1training.gpu_id={gpu_id}', command, count=1)
-else:
-    updated = f"{command} training.gpu_id={gpu_id}"
+parts = shlex.split(command)
+if not parts:
+    raise SystemExit("TRAIN_COMMAND is empty.")
 
-print(updated)
+env_parts = []
+env_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+index = 0
+while index < len(parts) and env_pattern.match(parts[index]) and not parts[index].startswith(("/", "./")):
+    key = parts[index].split("=", 1)[0]
+    if key != "CUDA_VISIBLE_DEVICES":
+        env_parts.append(parts[index])
+    index += 1
+
+command_parts = parts[index:]
+if not command_parts or os.path.basename(command_parts[0]) != "torchrun":
+    raise SystemExit("TRAIN_COMMAND must start with torchrun for auto_train_multi_card.")
+
+filtered_parts = []
+cursor = 0
+while cursor < len(command_parts):
+    token = command_parts[cursor]
+    if re.match(r"^training\.gpu_id=\S+$", token):
+        cursor += 1
+        continue
+    if token == "training.gpu_id":
+        cursor += 2 if cursor + 1 < len(command_parts) else 1
+        continue
+    if token == "--nproc_per_node":
+        cursor += 2 if cursor + 1 < len(command_parts) else 1
+        continue
+    if token.startswith("--nproc_per_node="):
+        cursor += 1
+        continue
+    filtered_parts.append(token)
+    cursor += 1
+
+updated_parts = [filtered_parts[0], f"--nproc_per_node={num_gpus}", *filtered_parts[1:]]
+final_parts = [f"CUDA_VISIBLE_DEVICES={gpu_ids_csv}", *env_parts, *updated_parts]
+print(shlex.join(final_parts))
 PY
 }
 
@@ -466,28 +571,51 @@ raise SystemExit(1)
 PY
 }
 
+write_structured_status() {
+    local status="$1"
+    local server="$2"
+    local num_gpus="$3"
+    local gpu_ids="$4"
+    local tmux_name="$5"
+    local command_name="$6"
+    local wandb_run_name="$7"
+    local error_reason="${8:-}"
+
+    printf 'status: %s\n' "$status"
+    printf 'server: %s\n' "$server"
+    printf 'num_gpus: %s\n' "$num_gpus"
+    printf 'gpu_ids: %s\n' "$gpu_ids"
+    printf 'tmux_name: %s\n' "$tmux_name"
+    printf 'command_name: %s\n' "$command_name"
+    printf 'wandb_run_name: %s\n' "$wandb_run_name"
+    if [[ -n "${error_reason// }" ]]; then
+        printf 'error_reason: %s\n' "$error_reason"
+    fi
+}
+
 main() {
     if [[ -z "${TRAIN_COMMAND// }" ]]; then
         echo "Set TRAIN_COMMAND at the top of this script before running it." >&2
         exit 1
     fi
 
-    local selected
-    if [[ -n "${SSH_NAME// }" && -n "${GPU_ID// }" ]]; then
-        if ! selected="$(find_preferred_gpu_or_error "$SSH_NAME" "$GPU_ID")"; then
-            exit 1
-        fi
-    else
-        if ! selected="$(find_first_free_gpu)"; then
-            echo "No reachable free GPU found." >&2
-            exit 1
-        fi
+    local normalized_gpu_id_csv
+    if ! normalized_gpu_id_csv="$(normalize_gpu_id_list "$GPU_ID")"; then
+        exit 1
     fi
 
-    local host_alias gpu_id gpu_util
-    IFS='|' read -r host_alias gpu_id gpu_util _ <<< "$selected"
+    local selected
+    if ! selected="$(find_multi_gpu_target_or_error "$SSH_NAME" "$NUM_GPUS" "$normalized_gpu_id_csv")"; then
+        exit 1
+    fi
+
+    local selection_status host_alias gpu_ids_csv
+    IFS='|' read -r selection_status host_alias gpu_ids_csv _ _ <<< "$selected"
     local prepared_command
-    prepared_command="$(prepare_train_command "$gpu_id")"
+    if ! prepared_command="$(prepare_train_command "$gpu_ids_csv" "$NUM_GPUS")"; then
+        exit 1
+    fi
+
     local command_name
     command_name="$(get_command_name "$prepared_command")"
     local session_name
@@ -506,28 +634,14 @@ main() {
 
     while true; do
         if (( $(date +%s) - start_time >= POLL_TIMEOUT_SECONDS )); then
-            printf 'status: timeout\n'
-            printf 'server: %s\n' "$host_alias"
-            printf 'gpu_id: %s\n' "$gpu_id"
-            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
-            printf 'tmux_name: %s\n' "$session_name"
-            printf 'command_name: %s\n' "$command_name"
-            printf 'wandb_run_name: -\n'
-            printf 'error_reason: Timed out waiting for wandb run name\n'
+            write_structured_status "timeout" "$host_alias" "$NUM_GPUS" "$gpu_ids_csv" "$session_name" "$command_name" "-" "Timed out waiting for wandb run name"
             exit 1
         fi
 
         sleep "$POLL_INTERVAL_SECONDS"
 
         if (( $(date +%s) - start_time >= POLL_TIMEOUT_SECONDS )); then
-            printf 'status: timeout\n'
-            printf 'server: %s\n' "$host_alias"
-            printf 'gpu_id: %s\n' "$gpu_id"
-            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
-            printf 'tmux_name: %s\n' "$session_name"
-            printf 'command_name: %s\n' "$command_name"
-            printf 'wandb_run_name: -\n'
-            printf 'error_reason: Timed out waiting for wandb run name\n'
+            write_structured_status "timeout" "$host_alias" "$NUM_GPUS" "$gpu_ids_csv" "$session_name" "$command_name" "-" "Timed out waiting for wandb run name"
             exit 1
         fi
 
@@ -542,37 +656,17 @@ main() {
         fi
 
         if failure_reason="$(printf '%s' "$pane_output" | extract_failure_reason 2>/dev/null)"; then
-            printf 'status: failed\n'
-            printf 'server: %s\n' "$host_alias"
-            printf 'gpu_id: %s\n' "$gpu_id"
-            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
-            printf 'tmux_name: %s\n' "$session_name"
-            printf 'command_name: %s\n' "$command_name"
-            printf 'wandb_run_name: -\n'
-            printf 'error_reason: %s\n' "$failure_reason"
+            write_structured_status "failed" "$host_alias" "$NUM_GPUS" "$gpu_ids_csv" "$session_name" "$command_name" "-" "$failure_reason"
             exit 1
         fi
 
         if (( $(date +%s) - start_time >= POLL_TIMEOUT_SECONDS )); then
-            printf 'status: timeout\n'
-            printf 'server: %s\n' "$host_alias"
-            printf 'gpu_id: %s\n' "$gpu_id"
-            printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
-            printf 'tmux_name: %s\n' "$session_name"
-            printf 'command_name: %s\n' "$command_name"
-            printf 'wandb_run_name: -\n'
-            printf 'error_reason: Timed out waiting for wandb run name\n'
+            write_structured_status "timeout" "$host_alias" "$NUM_GPUS" "$gpu_ids_csv" "$session_name" "$command_name" "-" "Timed out waiting for wandb run name"
             exit 1
         fi
     done
 
-    printf 'status: started\n'
-    printf 'server: %s\n' "$host_alias"
-    printf 'gpu_id: %s\n' "$gpu_id"
-    printf 'gpu_util: %s\n' "$(printf '%.0f' "$gpu_util")"
-    printf 'tmux_name: %s\n' "$session_name"
-    printf 'command_name: %s\n' "$command_name"
-    printf 'wandb_run_name: %s\n' "$wandb_run_name"
+    write_structured_status "started" "$host_alias" "$NUM_GPUS" "$gpu_ids_csv" "$session_name" "$command_name" "$wandb_run_name"
 }
 
 main "$@"
