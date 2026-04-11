@@ -6,11 +6,26 @@ param(
     [int]$PollTimeoutSeconds = 300,
     [int]$SshCommandTimeoutSeconds = 15,
     [string]$RemoteProjectDir = "/mnt/nas/share/home/hy/robust-rearrangement-custom",
-    [string]$RemoteCondaEnv = "rr"
+    [string]$RemoteCondaEnv = "rr",
+    [switch]$Force,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ExtraArgs = @()
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$normalizedExtraArgs = @($ExtraArgs | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+if ($normalizedExtraArgs.Count -gt 0) {
+    foreach ($arg in $normalizedExtraArgs) {
+        if ($arg -match '^--?force$') {
+            $Force = $true
+            continue
+        }
+
+        throw "Unknown argument: $arg"
+    }
+}
 
 function ConvertTo-CommandString {
     param([string[]]$Parts)
@@ -37,20 +52,19 @@ $global:TRAIN_COMMAND_PARTS = @(
     "data.data_subset=500",
     "data.demo_outcome=success",
     "data.suffix=rgbd-skill",
-    "training.batch_size=256",
+    "training.batch_size=512",
     "training.num_epochs=3000",
     "training.steps_per_epoch=-1",
     "training.save_per_epoch=500",
     "wandb.project=multi-task-rgbd-skill-low-500",
     "wandb.mode=online",
     "randomness=low",
-    "dryrun=false",
-    "training.num_epochs=4000"
+    "dryrun=false"
 )
 $global:TRAIN_COMMAND = ConvertTo-CommandString -Parts $global:TRAIN_COMMAND_PARTS
-$global:SSH_NAME = "230"
+$global:SSH_NAME = "232"
 $global:NUM_GPUs = 2
-$global:GPU_ID = "0,1"
+$global:GPU_ID = "1,3"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
 $global:DATA_DIR_PROCESSED = ""
@@ -340,7 +354,8 @@ function Select-MultiGpuTargetOnHost {
     param(
         [string]$HostAlias,
         [int]$NumGpus,
-        [int[]]$PreferredGpuIds = @()
+        [int[]]$PreferredGpuIds = @(),
+        [switch]$Force
     )
 
     $inventory = Get-HostGpuInventory -HostAlias $HostAlias
@@ -382,6 +397,42 @@ function Select-MultiGpuTargetOnHost {
     }
 
     if ($selected.Count -lt $NumGpus) {
+        if ($Force) {
+            $reportedMap = @{}
+            foreach ($gpu in $inventory.Gpus) {
+                $reportedMap[$gpu.GpuId] = $gpu
+            }
+
+            $forcedSelection = [System.Collections.Generic.List[object]]::new()
+            if ($PreferredGpuIds.Count -gt 0) {
+                foreach ($gpuId in $PreferredGpuIds) {
+                    if ($reportedMap.ContainsKey($gpuId)) {
+                        $forcedSelection.Add($reportedMap[$gpuId])
+                        if ($forcedSelection.Count -eq $NumGpus) {
+                            break
+                        }
+                    }
+                }
+            }
+
+            if ($forcedSelection.Count -lt $NumGpus) {
+                $forcedSelection = [System.Collections.Generic.List[object]]::new()
+                foreach ($gpu in ($inventory.Gpus | Sort-Object GpuUtil, MemoryUsed, GpuId | Select-Object -First $NumGpus)) {
+                    $forcedSelection.Add($gpu)
+                }
+            }
+
+            if ($forcedSelection.Count -ge $NumGpus) {
+                return [pscustomobject]@{
+                    Status        = 'FORCED'
+                    HostAlias     = $HostAlias
+                    GpuIds        = @($forcedSelection | Select-Object -First $NumGpus | ForEach-Object { $_.GpuId })
+                    FreeCount     = $freeGpus.Count
+                    RequiredCount = $NumGpus
+                }
+            }
+        }
+
         return [pscustomobject]@{
             Status        = 'INSUFFICIENT'
             HostAlias     = $HostAlias
@@ -402,7 +453,8 @@ function Find-MultiGpuTargetOrError {
     param(
         [string]$SshNameValue,
         [int]$NumGpus,
-        [int[]]$PreferredGpuIds = @()
+        [int[]]$PreferredGpuIds = @(),
+        [switch]$Force
     )
 
     if ($NumGpus -le 0) {
@@ -412,7 +464,7 @@ function Find-MultiGpuTargetOrError {
 
     if (-not [string]::IsNullOrWhiteSpace($SshNameValue)) {
         $hostAlias = Resolve-HostAlias -SshNameValue $SshNameValue
-        $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds $PreferredGpuIds
+        $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds $PreferredGpuIds -Force:$Force
 
         switch ($selection.Status) {
             'OK' {
@@ -426,6 +478,10 @@ function Find-MultiGpuTargetOrError {
                 [Console]::Error.WriteLine("Host '$hostAlias' has only $($selection.FreeCount) free GPUs; need $($selection.RequiredCount).")
                 return $null
             }
+            'FORCED' {
+                [Console]::Error.WriteLine("Host '$hostAlias' has only $($selection.FreeCount) free GPUs; need $($selection.RequiredCount). Continue due to --force.")
+                return $selection
+            }
             default {
                 [Console]::Error.WriteLine("Failed to select GPUs on host '$hostAlias'.")
                 return $null
@@ -437,6 +493,16 @@ function Find-MultiGpuTargetOrError {
         $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds @()
         if ($selection.Status -eq 'OK') {
             return $selection
+        }
+    }
+
+    if ($Force) {
+        foreach ($hostAlias in (Get-SortedHostAliases)) {
+            $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds @() -Force
+            if ($selection.Status -eq 'FORCED') {
+                [Console]::Error.WriteLine("Host '$hostAlias' has only $($selection.FreeCount) free GPUs; need $($selection.RequiredCount). Continue due to --force.")
+                return $selection
+            }
         }
     }
 
@@ -770,7 +836,7 @@ try {
     exit 1
 }
 
-$selection = Find-MultiGpuTargetOrError -SshNameValue $SSH_NAME -NumGpus $requestedGpuCount -PreferredGpuIds $preferredGpuIds
+$selection = Find-MultiGpuTargetOrError -SshNameValue $SSH_NAME -NumGpus $requestedGpuCount -PreferredGpuIds $preferredGpuIds -Force:$Force
 if ($null -eq $selection) {
     exit 1
 }

@@ -24,7 +24,7 @@ TRAIN_COMMAND_PARTS=(
     data.data_subset=500
     data.demo_outcome=success
     data.suffix=rgbd-skill
-    training.batch_size=256
+    training.batch_size=512
     training.num_epochs=3000
     training.steps_per_epoch=-1
     training.save_per_epoch=500
@@ -32,7 +32,6 @@ TRAIN_COMMAND_PARTS=(
     wandb.mode=online
     randomness=low
     dryrun=false
-    training.num_epochs=4000
 )
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="230"
