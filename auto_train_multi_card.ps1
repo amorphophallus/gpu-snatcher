@@ -142,6 +142,29 @@ function Get-ZjuHostsFromSshConfig {
     return @($result)
 }
 
+function Resolve-HostAlias {
+    param([string]$SshNameValue)
+
+    if ($null -eq $SshNameValue) {
+        return ''
+    }
+
+    $trimmed = $SshNameValue.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return ''
+    }
+
+    if ($trimmed -match '^zju_4090_') {
+        return $trimmed
+    }
+
+    if ($trimmed -match '^\d+$') {
+        return "zju_4090_$trimmed"
+    }
+
+    return $trimmed
+}
+
 function Invoke-SshCommand {
     param(
         [string]$HostAlias,
@@ -388,7 +411,7 @@ function Find-MultiGpuTargetOrError {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($SshNameValue)) {
-        $hostAlias = "zju_4090_$SshNameValue"
+        $hostAlias = Resolve-HostAlias -SshNameValue $SshNameValue
         $selection = Select-MultiGpuTargetOnHost -HostAlias $hostAlias -NumGpus $NumGpus -PreferredGpuIds $PreferredGpuIds
 
         switch ($selection.Status) {

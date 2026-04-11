@@ -85,6 +85,21 @@ get_hosts_from_ssh_config() {
     ' "$SSH_CONFIG_PATH" | awk '!seen[$0]++'
 }
 
+normalize_ssh_host() {
+    local host="${1:-}"
+    host="${host//[[:space:]]/}"
+
+    if [[ -z "$host" ]]; then
+        printf '%s\n' ""
+    elif [[ "$host" =~ ^zju_4090_ ]]; then
+        printf '%s\n' "$host"
+    elif [[ "$host" =~ ^[0-9]+$ ]]; then
+        printf 'zju_4090_%s\n' "$host"
+    else
+        printf '%s\n' "$host"
+    fi
+}
+
 invoke_ssh() {
     local host_alias="$1"
     local remote_command="$2"
@@ -302,7 +317,7 @@ find_multi_gpu_target_or_error() {
     fi
 
     if [[ -n "${ssh_name// }" ]]; then
-        host_alias="zju_4090_${ssh_name}"
+        host_alias="$(normalize_ssh_host "$ssh_name")"
         selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "$preferred_gpu_csv")"
         IFS='|' read -r status _ field2 field3 _ <<< "$selection_result"
 
