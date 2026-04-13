@@ -49,6 +49,7 @@ POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-300}"
 SSH_COMMAND_TIMEOUT_SECONDS="${SSH_COMMAND_TIMEOUT_SECONDS:-15}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/mnt/nas/share/home/hy/robust-rearrangement-custom}"
 REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-rr}"
+FORCE=0
 
 SESSION_NAME_CANDIDATES=(
     atlas
@@ -227,21 +228,39 @@ for host in sorted(dict.fromkeys(hosts), key=sort_key):
 PY
 }
 
+parse_extra_args() {
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-force)
+                FORCE=1
+                ;;
+            *)
+                echo "Unknown argument: $arg" >&2
+                return 1
+                ;;
+        esac
+    done
+}
+
 select_gpus_on_host() {
     local host_alias="$1"
     local num_gpus="$2"
     local preferred_gpu_csv="${3:-}"
+    local force="${4:-0}"
 
-    python3 - "$host_alias" "$num_gpus" "$preferred_gpu_csv" <<'PY'
+    python3 - "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force" <<'PY'
 import sys
 
 host_alias = sys.argv[1]
 num_gpus = int(sys.argv[2])
 preferred_gpu_csv = sys.argv[3]
+force = sys.argv[4] == "1"
 
 host_state = "DOWN"
 host_note = ""
-reported_gpu_ids = []
+reported_gpus = []
 free_gpus = {}
 
 for raw_line in sys.stdin:
@@ -260,14 +279,20 @@ for raw_line in sys.stdin:
         continue
 
     gpu_id = int(parts[2])
-    reported_gpu_ids.append(gpu_id)
+    gpu = {
+        "id": gpu_id,
+        "status": parts[3],
+        "used": float(parts[4]),
+        "util": float(parts[7]),
+    }
+    reported_gpus.append(gpu)
     if parts[3] != "FREE":
         continue
 
     free_gpus[gpu_id] = {
         "id": gpu_id,
-        "used": float(parts[4]),
-        "util": float(parts[7]),
+        "used": gpu["used"],
+        "util": gpu["util"],
     }
 
 if host_state != "OK":
@@ -286,11 +311,38 @@ if preferred_gpu_ids:
             if len(selected_gpu_ids) == num_gpus:
                 break
 
+if len(selected_gpu_ids) < num_gpus and preferred_gpu_ids and force:
+    reported_map = {gpu["id"]: gpu for gpu in reported_gpus}
+    forced_selection = []
+
+    for gpu_id in preferred_gpu_ids:
+        if gpu_id in reported_map:
+            forced_selection.append(reported_map[gpu_id])
+            if len(forced_selection) == num_gpus:
+                break
+
+    if len(forced_selection) >= num_gpus:
+        gpu_ids_csv = ",".join(str(gpu["id"]) for gpu in forced_selection[:num_gpus])
+        print(f"FORCED|{host_alias}|{gpu_ids_csv}|{len(free_gpus)}|{num_gpus}")
+        raise SystemExit(0)
+
+    reported_gpu_ids_csv = ",".join(str(gpu["id"]) for gpu in sorted(reported_gpus, key=lambda item: item["id"]))
+    print(f"PREFERRED_UNAVAILABLE|{host_alias}|{preferred_gpu_csv}|{reported_gpu_ids_csv}|{num_gpus}")
+    raise SystemExit(0)
+
 if len(selected_gpu_ids) < num_gpus:
     sorted_free_gpus = sorted(free_gpus.values(), key=lambda item: (item["util"], item["used"], item["id"]))
     selected_gpu_ids = [item["id"] for item in sorted_free_gpus[:num_gpus]]
 
 if len(selected_gpu_ids) < num_gpus:
+    if force:
+        forced_selection = sorted(reported_gpus, key=lambda item: (item["util"], item["used"], item["id"]))[:num_gpus]
+
+        if len(forced_selection) >= num_gpus:
+            gpu_ids_csv = ",".join(str(gpu["id"]) for gpu in forced_selection[:num_gpus])
+            print(f"FORCED|{host_alias}|{gpu_ids_csv}|{len(free_gpus)}|{num_gpus}")
+            raise SystemExit(0)
+
     print(f"INSUFFICIENT|{host_alias}|{len(free_gpus)}|{num_gpus}")
     raise SystemExit(0)
 
@@ -304,11 +356,13 @@ find_multi_gpu_target_or_error() {
     local ssh_name="$1"
     local num_gpus="$2"
     local preferred_gpu_csv="$3"
+    local force="${4:-0}"
     local host_alias
     local selection_result
     local status
     local field2
     local field3
+    local field4
 
     if [[ ! "$num_gpus" =~ ^[1-9][0-9]*$ ]]; then
         echo "NUM_GPUS must be a positive integer, got '$num_gpus'." >&2
@@ -317,8 +371,8 @@ find_multi_gpu_target_or_error() {
 
     if [[ -n "${ssh_name// }" ]]; then
         host_alias="$(normalize_ssh_host "$ssh_name")"
-        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "$preferred_gpu_csv")"
-        IFS='|' read -r status _ field2 field3 _ <<< "$selection_result"
+        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force")"
+        IFS='|' read -r status _ field2 field3 field4 <<< "$selection_result"
 
         case "$status" in
             OK)
@@ -333,6 +387,15 @@ find_multi_gpu_target_or_error() {
                 echo "Host '$host_alias' has only $field2 free GPUs; need $field3." >&2
                 return 1
                 ;;
+            FORCED)
+                echo "Host '$host_alias' has only $field3 free GPUs; need $field4. Continue due to --force." >&2
+                printf '%s\n' "$selection_result"
+                return 0
+                ;;
+            PREFERRED_UNAVAILABLE)
+                echo "Cannot honor GPU_ID=$field2 on host '$host_alias' with --force. Need $field4 GPU(s); host reports GPU IDs: ${field3:-none}." >&2
+                return 1
+                ;;
             *)
                 echo "Failed to select GPUs on host '$host_alias'." >&2
                 return 1
@@ -342,13 +405,26 @@ find_multi_gpu_target_or_error() {
 
     while IFS= read -r host_alias; do
         [[ -z "$host_alias" ]] && continue
-        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "")"
+        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "" "0")"
         IFS='|' read -r status _ _ _ _ <<< "$selection_result"
         if [[ "$status" == "OK" ]]; then
             printf '%s\n' "$selection_result"
             return 0
         fi
     done < <(list_hosts_by_priority)
+
+    if [[ "$force" == "1" ]]; then
+        while IFS= read -r host_alias; do
+            [[ -z "$host_alias" ]] && continue
+            selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "" "1")"
+            IFS='|' read -r status _ _ field3 field4 <<< "$selection_result"
+            if [[ "$status" == "FORCED" ]]; then
+                echo "Host '$host_alias' has only $field3 free GPUs; need $field4. Continue due to --force." >&2
+                printf '%s\n' "$selection_result"
+                return 0
+            fi
+        done < <(list_hosts_by_priority)
+    fi
 
     echo "No reachable server has ${num_gpus} free GPUs." >&2
     return 1
@@ -608,6 +684,10 @@ write_structured_status() {
 }
 
 main() {
+    if ! parse_extra_args "$@"; then
+        exit 1
+    fi
+
     if [[ -z "${TRAIN_COMMAND// }" ]]; then
         echo "Set TRAIN_COMMAND at the top of this script before running it." >&2
         exit 1
@@ -619,7 +699,7 @@ main() {
     fi
 
     local selected
-    if ! selected="$(find_multi_gpu_target_or_error "$SSH_NAME" "$NUM_GPUS" "$normalized_gpu_id_csv")"; then
+    if ! selected="$(find_multi_gpu_target_or_error "$SSH_NAME" "$NUM_GPUS" "$normalized_gpu_id_csv" "$FORCE")"; then
         exit 1
     fi
 

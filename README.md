@@ -46,7 +46,7 @@ Bash:
 
 Before running `auto_train_single_card`, edit the globals at the top of the script such as `TRAIN_COMMAND`, `SSH_NAME` (optional), `GPU_ID` (optional single GPU id), and `DATA_DIR_PROCESSED` when needed.
 
-Before running `auto_train_multi_card`, edit the globals at the top of the script such as `TRAIN_COMMAND`, `NUM_GPUs`, `SSH_NAME` (optional), `GPU_ID` (optional comma-separated preferred GPU list; only used when `SSH_NAME` is set), and `DATA_DIR_PROCESSED` when needed.
+Before running `auto_train_multi_card`, edit the globals at the top of the script such as `TRAIN_COMMAND`, `NUM_GPUs`, `SSH_NAME` (optional), `GPU_ID` (optional comma-separated preferred GPU list; only used when `SSH_NAME` is set), and `DATA_DIR_PROCESSED` when needed. Pass `--force` to allow the script to continue when a host has fewer free GPUs than requested; when `SSH_NAME` and `GPU_ID` are both set, `--force` will keep the run on the requested `GPU_ID` entries instead of falling back to different GPUs on that host.
 
 Before running `auto_eval.sh`, edit the globals at the top of the script such as `REMOTE_PATH`, `REMOTE_SSH_HOST` (optional, accepts `228` and expands it to `zju_4090_228`), `RUN_ID`, `LOCAL_PATH`, `TASK`, `PROJECT`, `EPOCH`, `N_ENVS`, `N_ROLLOUTS`, and `PARAMS`.
 

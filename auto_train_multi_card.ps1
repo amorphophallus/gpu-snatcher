@@ -367,9 +367,12 @@ function Select-MultiGpuTargetOnHost {
         }
     }
 
-    $reportedGpuIds = @($inventory.Gpus | Sort-Object GpuId | ForEach-Object { $_.GpuId })
     $freeGpus = @($inventory.Gpus | Where-Object { $_.Status -eq 'FREE' })
     $selected = @()
+    $reportedMap = @{}
+    foreach ($gpu in $inventory.Gpus) {
+        $reportedMap[$gpu.GpuId] = $gpu
+    }
 
     if ($PreferredGpuIds.Count -gt 0) {
         $freeMap = @{}
@@ -392,34 +395,46 @@ function Select-MultiGpuTargetOnHost {
         }
     }
 
+    if ($selected.Count -lt $NumGpus -and $PreferredGpuIds.Count -gt 0 -and $Force) {
+        $forcedSelection = [System.Collections.Generic.List[object]]::new()
+        foreach ($gpuId in $PreferredGpuIds) {
+            if ($reportedMap.ContainsKey($gpuId)) {
+                $forcedSelection.Add($reportedMap[$gpuId])
+                if ($forcedSelection.Count -eq $NumGpus) {
+                    break
+                }
+            }
+        }
+
+        if ($forcedSelection.Count -ge $NumGpus) {
+            return [pscustomobject]@{
+                Status        = 'FORCED'
+                HostAlias     = $HostAlias
+                GpuIds        = @($forcedSelection | Select-Object -First $NumGpus | ForEach-Object { $_.GpuId })
+                FreeCount     = $freeGpus.Count
+                RequiredCount = $NumGpus
+            }
+        }
+
+        $reportedGpuIds = @($inventory.Gpus | Sort-Object GpuId | ForEach-Object { $_.GpuId })
+        return [pscustomobject]@{
+            Status          = 'PREFERRED_UNAVAILABLE'
+            HostAlias       = $HostAlias
+            PreferredGpuIds = @($PreferredGpuIds)
+            ReportedGpuIds  = $reportedGpuIds
+            RequiredCount   = $NumGpus
+        }
+    }
+
     if ($selected.Count -lt $NumGpus) {
         $selected = @($freeGpus | Sort-Object GpuUtil, MemoryUsed, GpuId | Select-Object -First $NumGpus)
     }
 
     if ($selected.Count -lt $NumGpus) {
         if ($Force) {
-            $reportedMap = @{}
-            foreach ($gpu in $inventory.Gpus) {
-                $reportedMap[$gpu.GpuId] = $gpu
-            }
-
             $forcedSelection = [System.Collections.Generic.List[object]]::new()
-            if ($PreferredGpuIds.Count -gt 0) {
-                foreach ($gpuId in $PreferredGpuIds) {
-                    if ($reportedMap.ContainsKey($gpuId)) {
-                        $forcedSelection.Add($reportedMap[$gpuId])
-                        if ($forcedSelection.Count -eq $NumGpus) {
-                            break
-                        }
-                    }
-                }
-            }
-
-            if ($forcedSelection.Count -lt $NumGpus) {
-                $forcedSelection = [System.Collections.Generic.List[object]]::new()
-                foreach ($gpu in ($inventory.Gpus | Sort-Object GpuUtil, MemoryUsed, GpuId | Select-Object -First $NumGpus)) {
-                    $forcedSelection.Add($gpu)
-                }
+            foreach ($gpu in ($inventory.Gpus | Sort-Object GpuUtil, MemoryUsed, GpuId | Select-Object -First $NumGpus)) {
+                $forcedSelection.Add($gpu)
             }
 
             if ($forcedSelection.Count -ge $NumGpus) {
@@ -481,6 +496,12 @@ function Find-MultiGpuTargetOrError {
             'FORCED' {
                 [Console]::Error.WriteLine("Host '$hostAlias' has only $($selection.FreeCount) free GPUs; need $($selection.RequiredCount). Continue due to --force.")
                 return $selection
+            }
+            'PREFERRED_UNAVAILABLE' {
+                $preferredGpuText = if ($selection.PreferredGpuIds.Count -gt 0) { $selection.PreferredGpuIds -join ',' } else { 'none' }
+                $reportedGpuText = if ($selection.ReportedGpuIds.Count -gt 0) { $selection.ReportedGpuIds -join ',' } else { 'none' }
+                [Console]::Error.WriteLine("Cannot honor GPU_ID=$preferredGpuText on host '$hostAlias' with --force. Need $($selection.RequiredCount) GPU(s); host reports GPU IDs: $reportedGpuText.")
+                return $null
             }
             default {
                 [Console]::Error.WriteLine("Failed to select GPUs on host '$hostAlias'.")
