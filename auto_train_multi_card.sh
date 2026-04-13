@@ -35,9 +35,9 @@ TRAIN_COMMAND_PARTS=(
     data.load_into_memory=true
 )
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
-SSH_NAME="230"
+SSH_NAME="232"
 NUM_GPUS="2"
-GPU_ID="0,1"
+GPU_ID="2,3"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240)

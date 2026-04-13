@@ -4,16 +4,17 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    collect_data
-    process_pickles
+    # collect_data
+    # process_pickles
     upload
 )
 
 LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
 # LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
-REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
+# REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
+REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="240"
+REMOTE_SSH_HOST="236"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
@@ -21,9 +22,9 @@ UPLOAD_RETRY_DELAY_SECONDS=5
 
 # Comment out a line to skip that task for collect/process.
 TASKS=(
-    one_leg
+    # one_leg
     round_table
-    lamp
+    # lamp
 )
 
 declare -A TASK_CKPT=(  # relative to local root
@@ -45,7 +46,7 @@ declare -A TASK_ROLLOUT_AFTER_SUCCESS=(
 )
 
 COLLECT_N_ENVS=4
-COLLECT_N_ROLLOUTS=516  # 要多少数据
+COLLECT_N_ROLLOUTS=44  # 要多少数据
 COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
@@ -64,7 +65,7 @@ PROCESS_DOMAIN="sim"
 PROCESS_SOURCE="rollout"
 PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
-PROCESS_SUFFIX="rgbd"
+PROCESS_SUFFIX="rgbd-skill"
 PROCESS_OUTPUT_SUFFIX="rgbd-skill"
 PROCESS_BATCH_SIZE=2
 
@@ -291,6 +292,8 @@ upload_step() {
         rsync_upload_cmd=(
             rsync
             -a
+            --no-owner
+            --no-group
             --partial-dir=.rsync-partial
             --human-readable
             --info=progress2
