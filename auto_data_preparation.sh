@@ -56,6 +56,7 @@ COLLECT_FLAGS=(
     --save-depth-image
     --annotate-skill
     --skill-on-image
+    --output-only-pickle
 )
 
 PROCESS_CONTROLLER="diffik"
@@ -248,56 +249,75 @@ process_pickles_step() {
 
 upload_step() {
     local local_root="$1"
-    local upload_dir remote_ssh_host remote_upload_dir
+    local upload_base_dir remote_ssh_host remote_upload_base_dir
+    local task task_upload_dir remote_task_dir
     local remote_mkdir_cmd
     local -a ssh_mkdir_cmd
     local -a rsync_upload_cmd
     local rsync_ssh_cmd
+    local uploaded_any
 
-    upload_dir="${local_root%/}/${UPLOAD_RELATIVE_DIR}"
-    [[ -d "$upload_dir" ]] || die "Upload directory does not exist: ${upload_dir}"
+    upload_base_dir="${local_root%/}/${UPLOAD_RELATIVE_DIR}"
+    [[ -d "$upload_base_dir" ]] || die "Upload directory does not exist: ${upload_base_dir}"
 
     remote_ssh_host="$(normalize_remote_ssh_host "${REMOTE_SSH_HOST:-}")"
-    remote_upload_dir="${REMOTE_PATH%/}/${UPLOAD_RELATIVE_DIR}"
+    remote_upload_base_dir="${REMOTE_PATH%/}/${UPLOAD_RELATIVE_DIR}"
 
     [[ -n "$remote_ssh_host" ]] || die "REMOTE_SSH_HOST is required for upload."
 
     require_command ssh
     require_command rsync
-    printf -v remote_mkdir_cmd 'mkdir -p %q' "$remote_upload_dir"
-    ssh_mkdir_cmd=(
-        ssh
-        -o BatchMode=yes \
-        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        -o ServerAliveInterval=5
-        -o ServerAliveCountMax=3
-        "$remote_ssh_host"
-        "$remote_mkdir_cmd"
-    )
     rsync_ssh_cmd="ssh -o BatchMode=yes -o ConnectTimeout=${CONNECT_TIMEOUT_SECONDS} -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
-    rsync_upload_cmd=(
-        rsync
-        -a
-        --partial-dir=.rsync-partial
-        --human-readable
-        --info=progress2
-        -e
-        "$rsync_ssh_cmd"
-        "${upload_dir}/"
-        "${remote_ssh_host}:${remote_upload_dir}/"
-    )
 
-    run_with_retry \
-        "$UPLOAD_MAX_RETRIES" \
-        "$UPLOAD_RETRY_DELAY_SECONDS" \
-        "Ensuring remote upload directory exists: ${remote_ssh_host}:${remote_upload_dir}" \
-        "${ssh_mkdir_cmd[@]}"
+    uploaded_any=false
+    for task in "${TASKS[@]}"; do
+        task_upload_dir="${upload_base_dir%/}/${task}"
+        if [[ ! -d "$task_upload_dir" ]]; then
+            log_error "Task upload directory does not exist, skipping: ${task_upload_dir}"
+            continue
+        fi
 
-    run_with_retry \
-        "$UPLOAD_MAX_RETRIES" \
-        "$UPLOAD_RETRY_DELAY_SECONDS" \
-        "Uploading folder ${upload_dir} to ${remote_ssh_host}:${remote_upload_dir} via rsync" \
-        "${rsync_upload_cmd[@]}"
+        remote_task_dir="${remote_upload_base_dir%/}/${task}"
+        printf -v remote_mkdir_cmd 'mkdir -p %q' "$remote_task_dir"
+        ssh_mkdir_cmd=(
+            ssh
+            -o BatchMode=yes \
+            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+            -o ServerAliveInterval=5
+            -o ServerAliveCountMax=3
+            "$remote_ssh_host"
+            "$remote_mkdir_cmd"
+        )
+        rsync_upload_cmd=(
+            rsync
+            -a
+            --partial-dir=.rsync-partial
+            --human-readable
+            --info=progress2
+            -e
+            "$rsync_ssh_cmd"
+            "${task_upload_dir}/"
+            "${remote_ssh_host}:${remote_task_dir}/"
+        )
+
+        run_with_retry \
+            "$UPLOAD_MAX_RETRIES" \
+            "$UPLOAD_RETRY_DELAY_SECONDS" \
+            "Ensuring remote upload directory exists: ${remote_ssh_host}:${remote_task_dir}" \
+            "${ssh_mkdir_cmd[@]}"
+
+        run_with_retry \
+            "$UPLOAD_MAX_RETRIES" \
+            "$UPLOAD_RETRY_DELAY_SECONDS" \
+            "Uploading folder ${task_upload_dir} to ${remote_ssh_host}:${remote_task_dir} via rsync" \
+            "${rsync_upload_cmd[@]}"
+
+        uploaded_any=true
+    done
+
+    if [[ "$uploaded_any" != true ]]; then
+        die "No task upload directories found under ${upload_base_dir}"
+    fi
 }
 
 main() {

@@ -32,6 +32,7 @@ TRAIN_COMMAND_PARTS=(
     wandb.mode=online
     randomness=low
     dryrun=false
+    data.load_into_memory=true
 )
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="230"

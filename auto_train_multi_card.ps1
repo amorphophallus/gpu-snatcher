@@ -59,7 +59,8 @@ $global:TRAIN_COMMAND_PARTS = @(
     "wandb.project=multi-task-rgbd-skill-low-500",
     "wandb.mode=online",
     "randomness=low",
-    "dryrun=false"
+    "dryrun=false",
+    "data.load_into_memory=true"
 )
 $global:TRAIN_COMMAND = ConvertTo-CommandString -Parts $global:TRAIN_COMMAND_PARTS
 $global:SSH_NAME = "232"
@@ -67,7 +68,7 @@ $global:NUM_GPUs = 2
 $global:GPU_ID = "1,3"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
-$global:DATA_DIR_PROCESSED = ""
+$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"
 $sessionNameCandidates = @(
     "atlas",
     "birch",
