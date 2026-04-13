@@ -279,7 +279,11 @@ upload_step() {
         fi
 
         remote_task_dir="${remote_upload_base_dir%/}/${task}"
-        printf -v remote_mkdir_cmd 'mkdir -p %q' "$remote_task_dir"
+        if [[ "$remote_task_dir" == "~/"* ]]; then
+            remote_mkdir_cmd="mkdir -p -- ~/${remote_task_dir#~/}"
+        else
+            printf -v remote_mkdir_cmd 'mkdir -p -- %q' "$remote_task_dir"
+        fi
         ssh_mkdir_cmd=(
             ssh
             -o BatchMode=yes \
