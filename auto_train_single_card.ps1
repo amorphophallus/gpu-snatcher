@@ -104,7 +104,30 @@ function Get-ZjuHostsFromSshConfig {
         }
     }
 
-    return @($result)
+    return @($result | Sort-Object -Unique)
+}
+
+function Resolve-HostAlias {
+    param([string]$SshNameValue)
+
+    if ($null -eq $SshNameValue) {
+        return ''
+    }
+
+    $trimmed = $SshNameValue.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return ''
+    }
+
+    if ($trimmed -match '^zju_4090_') {
+        return $trimmed
+    }
+
+    if ($trimmed -match '^\d+$') {
+        return "zju_4090_$trimmed"
+    }
+
+    return $trimmed
 }
 
 function Invoke-SshCommand {
@@ -117,6 +140,7 @@ function Invoke-SshCommand {
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
         '-o', 'ServerAliveInterval=5',
         '-o', 'ServerAliveCountMax=1',
         $HostAlias,
@@ -162,73 +186,114 @@ function Invoke-SshCommand {
     }
 }
 
+function Get-HostGpuInventory {
+    param([string]$HostAlias)
+
+    $result = Invoke-SshCommand -HostAlias $HostAlias -RemoteCommand 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
+    if ($result.ExitCode -ne 0) {
+        return [pscustomobject]@{
+            HostAlias = $HostAlias
+            State     = 'DOWN'
+            Note      = $result.Output
+            Gpus      = @()
+        }
+    }
+
+    $gpus = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in ($result.Output -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $parts = $line -split '\s*,\s*'
+        if ($parts.Count -lt 4) {
+            continue
+        }
+
+        $memoryTotal = [double]$parts[1]
+        $memoryUsed = [double]$parts[2]
+        $gpuUtil = [double]$parts[3]
+        $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
+        $status = if ($usageRatio -lt $MemoryUsageThreshold) { 'FREE' } else { 'BUSY' }
+
+        $gpus.Add([pscustomobject]@{
+            GpuId        = [int]$parts[0]
+            Status       = $status
+            MemoryUsed   = $memoryUsed
+            MemoryTotal  = $memoryTotal
+            UsagePercent = [math]::Round($usageRatio * 100, 1)
+            GpuUtil      = $gpuUtil
+        })
+    }
+
+    return [pscustomobject]@{
+        HostAlias = $HostAlias
+        State     = 'OK'
+        Note      = ''
+        Gpus      = @($gpus)
+    }
+}
+
+function Get-HostPriority {
+    param([string]$HostAlias)
+
+    $suffix = ''
+    if ($HostAlias -match '([0-9]+)$') {
+        $suffix = $Matches[1]
+    }
+
+    if ($suffix -and ($FAST_SERVER -contains $suffix)) {
+        return 0
+    }
+    if ($suffix -and ($SLOW_SERVER -contains $suffix)) {
+        return 2
+    }
+
+    return 1
+}
+
+function Get-HostNumber {
+    param([string]$HostAlias)
+
+    if ($HostAlias -match '([0-9]+)$') {
+        return [int]$Matches[1]
+    }
+
+    return -1
+}
+
+function Get-SortedHostAliases {
+    return @(
+        Get-ZjuHostsFromSshConfig -Path $SshConfigPath |
+            Sort-Object `
+                @{ Expression = { Get-HostPriority -HostAlias $_ } }, `
+                @{ Expression = { Get-HostNumber -HostAlias $_ }; Descending = $true }, `
+                @{ Expression = { $_ } }
+    )
+}
+
 function Find-FirstFreeGpu {
     $candidates = [System.Collections.Generic.List[object]]::new()
-    $fastSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $slowSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    foreach ($serverId in $FAST_SERVER) {
-        if (-not [string]::IsNullOrWhiteSpace($serverId)) {
-            [void]$fastSet.Add(([string]$serverId).Trim())
-        }
-    }
-
-    foreach ($serverId in $SLOW_SERVER) {
-        if (-not [string]::IsNullOrWhiteSpace($serverId)) {
-            [void]$slowSet.Add(([string]$serverId).Trim())
-        }
-    }
-
-    foreach ($hostAlias in (Get-ZjuHostsFromSshConfig -Path $SshConfigPath)) {
+    foreach ($hostAlias in (Get-SortedHostAliases)) {
         if ([string]::IsNullOrWhiteSpace($hostAlias)) {
             continue
         }
 
-        $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
-        if ($result.ExitCode -ne 0) {
+        $inventory = Get-HostGpuInventory -HostAlias $hostAlias
+        if ($inventory.State -ne 'OK') {
             continue
         }
 
-        foreach ($line in ($result.Output -split "`r?`n")) {
-            if ([string]::IsNullOrWhiteSpace($line)) {
-                continue
-            }
-
-            $parts = $line -split '\s*,\s*'
-            if ($parts.Count -lt 4) {
-                continue
-            }
-
-            $gpuId = [int]$parts[0]
-            $memoryTotal = [double]$parts[1]
-            $memoryUsed = [double]$parts[2]
-            $gpuUtil = [double]$parts[3]
-            $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
-
-            if ($usageRatio -lt $MemoryUsageThreshold) {
-                $suffix = ''
-                $hostNum = 0
-                if ($hostAlias -match '([0-9]+)$') {
-                    $suffix = $Matches[1]
-                    $hostNum = [int]$suffix
-                }
-
-                $priority = 1
-                if ($suffix -and $fastSet.Contains($suffix)) {
-                    $priority = 0
-                } elseif ($suffix -and $slowSet.Contains($suffix)) {
-                    $priority = 2
-                }
-
-                $candidates.Add([pscustomobject]@{
-                    HostAlias  = $hostAlias
-                    GpuId      = $gpuId
-                    GpuUtil    = $gpuUtil
-                    MemoryUsed = $memoryUsed
-                    Priority   = $priority
-                    HostNum    = $hostNum
-                })
-            }
+        foreach ($gpu in ($inventory.Gpus | Where-Object { $_.Status -eq 'FREE' })) {
+            $candidates.Add([pscustomobject]@{
+                HostAlias  = $hostAlias
+                GpuId      = $gpu.GpuId
+                GpuUtil    = $gpu.GpuUtil
+                MemoryUsed = $gpu.MemoryUsed
+                Priority   = Get-HostPriority -HostAlias $hostAlias
+                HostNum    = Get-HostNumber -HostAlias $hostAlias
+            })
         }
     }
 
@@ -258,51 +323,37 @@ function Find-PreferredGpuOrError {
         return $null
     }
 
-    $hostAlias = "zju_4090_$SshNameValue"
+    $hostAlias = Resolve-HostAlias -SshNameValue $SshNameValue
     $targetGpuId = [int]$GpuIdText
-    $result = Invoke-SshCommand -HostAlias $hostAlias -RemoteCommand 'nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits'
+    $inventory = Get-HostGpuInventory -HostAlias $hostAlias
 
-    if ($result.ExitCode -ne 0) {
-        [Console]::Error.WriteLine("Preferred host '$hostAlias' is unreachable: $($result.Output)")
+    if ($inventory.State -ne 'OK') {
+        [Console]::Error.WriteLine("Preferred host '$hostAlias' is unreachable: $($inventory.Note)")
         return $null
     }
 
-    foreach ($line in ($result.Output -split "`r?`n")) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
+    foreach ($gpu in $inventory.Gpus) {
+        if ($gpu.GpuId -ne $targetGpuId) {
             continue
         }
 
-        $parts = $line -split '\s*,\s*'
-        if ($parts.Count -lt 4) {
-            continue
-        }
-
-        $gpuId = [int]$parts[0]
-        if ($gpuId -ne $targetGpuId) {
-            continue
-        }
-
-        $memoryTotal = [double]$parts[1]
-        $memoryUsed = [double]$parts[2]
-        $gpuUtil = [double]$parts[3]
-        $usageRatio = if ($memoryTotal -gt 0) { $memoryUsed / $memoryTotal } else { 1.0 }
-        $usagePercent = [math]::Round($usageRatio * 100, 1)
         $thresholdPercent = [math]::Round($MemoryUsageThreshold * 100, 1)
-
-        if ($usageRatio -ge $MemoryUsageThreshold) {
-            [Console]::Error.WriteLine("Preferred GPU not available: $hostAlias GPU$targetGpuId memory usage $usagePercent% >= threshold $thresholdPercent% (gpu util $([math]::Round($gpuUtil, 0))%).")
+        if ($gpu.Status -ne 'FREE') {
+            [Console]::Error.WriteLine("Preferred GPU not available: $hostAlias GPU$targetGpuId memory usage $($gpu.UsagePercent)% >= threshold $thresholdPercent% (gpu util $([math]::Round($gpu.GpuUtil, 0))%).")
             return $null
         }
 
         return [pscustomobject]@{
             HostAlias  = $hostAlias
-            GpuId      = $gpuId
-            GpuUtil    = $gpuUtil
-            MemoryUsed = $memoryUsed
+            GpuId      = $gpu.GpuId
+            GpuUtil    = $gpu.GpuUtil
+            MemoryUsed = $gpu.MemoryUsed
         }
     }
 
-    [Console]::Error.WriteLine("Preferred GPU not found on host '$hostAlias': GPU$targetGpuId.")
+    $availableGpuIds = @($inventory.Gpus | Sort-Object GpuId | ForEach-Object { $_.GpuId })
+    $availableText = if ($availableGpuIds.Count -gt 0) { $availableGpuIds -join ', ' } else { 'none' }
+    [Console]::Error.WriteLine("Preferred GPU not found on host '$hostAlias': GPU$targetGpuId. Available GPU IDs reported by nvidia-smi: $availableText. GPU IDs are 0-based.")
     return $null
 }
 
@@ -393,6 +444,44 @@ encoded_train_command="$4"
 data_dir_processed="${5:-}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
+resolve_tmp_dir() {
+    local candidate
+    local user_name
+    local wandb_dir
+    local cache_dir
+    local test_dir
+
+    user_name="${USER:-$(id -un 2>/dev/null || echo user)}"
+
+    for candidate in "/tmp/${user_name}/auto_train_tmp" "$HOME/tmp"; do
+        [[ -z "$candidate" ]] && continue
+
+        if ! mkdir -p "$candidate" >/dev/null 2>&1; then
+            continue
+        fi
+
+        wandb_dir="$candidate/wandb"
+        cache_dir="$candidate/wandb-cache"
+        if ! mkdir -p "$wandb_dir" "$cache_dir" >/dev/null 2>&1; then
+            continue
+        fi
+
+        test_dir="$candidate/.auto_train_tmp_write_test_$$"
+        if mkdir "$test_dir" >/dev/null 2>&1; then
+            rmdir "$test_dir" >/dev/null 2>&1 || true
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "No writable temporary directory found. Checked: /tmp/${user_name}/auto_train_tmp, $HOME/tmp" >&2
+    return 1
+}
+
+tmp_dir="$(resolve_tmp_dir)"
+wandb_dir="$tmp_dir/wandb"
+wandb_cache_dir="$tmp_dir/wandb-cache"
+
 command -v tmux >/dev/null 2>&1
 tmux has-session -t "$session_name" >/dev/null 2>&1 && exit 10
 tmux new-session -d -s "$session_name"
@@ -404,7 +493,17 @@ tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || 
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tmp"
+printf -v tmp_export 'export TMPDIR=%q TEMP=%q TMP=%q' "$tmp_dir" "$tmp_dir" "$tmp_dir"
+tmux send-keys -t "$session_name:train" -l "$tmp_export"
+tmux send-keys -t "$session_name:train" Enter
+printf -v wandb_export 'export WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_DATA_DIR=%q' "$wandb_dir" "$wandb_cache_dir" "$wandb_dir"
+tmux send-keys -t "$session_name:train" -l "$wandb_export"
+tmux send-keys -t "$session_name:train" Enter
+printf -v tmp_echo_command 'echo AUTO_TRAIN_TMPDIR=%q' "$tmp_dir"
+tmux send-keys -t "$session_name:train" -l "$tmp_echo_command"
+tmux send-keys -t "$session_name:train" Enter
+printf -v wandb_echo_command 'echo AUTO_TRAIN_WANDB_DIR=%q' "$wandb_dir"
+tmux send-keys -t "$session_name:train" -l "$wandb_echo_command"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
@@ -423,6 +522,7 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
         $HostAlias,
         'bash', '-s', '--',
         $SessionName,

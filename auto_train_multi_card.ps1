@@ -154,7 +154,7 @@ function Get-ZjuHostsFromSshConfig {
         }
     }
 
-    return @($result)
+    return @($result | Sort-Object -Unique)
 }
 
 function Resolve-HostAlias {
@@ -190,6 +190,7 @@ function Invoke-SshCommand {
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
         '-o', 'ServerAliveInterval=5',
         '-o', 'ServerAliveCountMax=1',
         $HostAlias,
@@ -670,6 +671,44 @@ encoded_train_command="$4"
 data_dir_processed="${5:-}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
+resolve_tmp_dir() {
+    local candidate
+    local user_name
+    local wandb_dir
+    local cache_dir
+    local test_dir
+
+    user_name="${USER:-$(id -un 2>/dev/null || echo user)}"
+
+    for candidate in "/tmp/${user_name}/auto_train_tmp" "$HOME/tmp"; do
+        [[ -z "$candidate" ]] && continue
+
+        if ! mkdir -p "$candidate" >/dev/null 2>&1; then
+            continue
+        fi
+
+        wandb_dir="$candidate/wandb"
+        cache_dir="$candidate/wandb-cache"
+        if ! mkdir -p "$wandb_dir" "$cache_dir" >/dev/null 2>&1; then
+            continue
+        fi
+
+        test_dir="$candidate/.auto_train_tmp_write_test_$$"
+        if mkdir "$test_dir" >/dev/null 2>&1; then
+            rmdir "$test_dir" >/dev/null 2>&1 || true
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "No writable temporary directory found. Checked: /tmp/${user_name}/auto_train_tmp, $HOME/tmp" >&2
+    return 1
+}
+
+tmp_dir="$(resolve_tmp_dir)"
+wandb_dir="$tmp_dir/wandb"
+wandb_cache_dir="$tmp_dir/wandb-cache"
+
 command -v tmux >/dev/null 2>&1
 tmux has-session -t "$session_name" >/dev/null 2>&1 && exit 10
 tmux new-session -d -s "$session_name"
@@ -681,7 +720,17 @@ tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || 
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tmp"
+printf -v tmp_export 'export TMPDIR=%q TEMP=%q TMP=%q' "$tmp_dir" "$tmp_dir" "$tmp_dir"
+tmux send-keys -t "$session_name:train" -l "$tmp_export"
+tmux send-keys -t "$session_name:train" Enter
+printf -v wandb_export 'export WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_DATA_DIR=%q' "$wandb_dir" "$wandb_cache_dir" "$wandb_dir"
+tmux send-keys -t "$session_name:train" -l "$wandb_export"
+tmux send-keys -t "$session_name:train" Enter
+printf -v tmp_echo_command 'echo AUTO_TRAIN_TMPDIR=%q' "$tmp_dir"
+tmux send-keys -t "$session_name:train" -l "$tmp_echo_command"
+tmux send-keys -t "$session_name:train" Enter
+printf -v wandb_echo_command 'echo AUTO_TRAIN_WANDB_DIR=%q' "$wandb_dir"
+tmux send-keys -t "$session_name:train" -l "$wandb_echo_command"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
@@ -700,6 +749,7 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
         $HostAlias,
         'bash', '-s', '--',
         $SessionName,

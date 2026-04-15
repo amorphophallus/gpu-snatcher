@@ -112,12 +112,26 @@ get_host_gpu_status() {
     local host_alias="$1"
     local query_output
     local ssh_status
+    local restore_errexit=0
+
+    # Match check_zju_4090.sh semantics under `set -e`: failed SSH probes should
+    # report a DOWN row with the error message instead of exiting early.
+    case $- in
+        *e*)
+            restore_errexit=1
+            set +e
+            ;;
+    esac
 
     query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         -o StrictHostKeyChecking=accept-new \
         "$host_alias" \
         "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
     ssh_status=$?
+
+    if (( restore_errexit )); then
+        set -e
+    fi
 
     if [[ $ssh_status -ne 0 ]]; then
         printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$query_output"
@@ -362,6 +376,44 @@ encoded_train_command="$4"
 data_dir_processed="${5:-}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
+resolve_tmp_dir() {
+    local candidate
+    local user_name
+    local wandb_dir
+    local cache_dir
+    local test_dir
+
+    user_name="${USER:-$(id -un 2>/dev/null || echo user)}"
+
+    for candidate in "/tmp/${user_name}/auto_train_tmp" "$HOME/tmp"; do
+        [[ -z "$candidate" ]] && continue
+
+        if ! mkdir -p "$candidate" >/dev/null 2>&1; then
+            continue
+        fi
+
+        wandb_dir="$candidate/wandb"
+        cache_dir="$candidate/wandb-cache"
+        if ! mkdir -p "$wandb_dir" "$cache_dir" >/dev/null 2>&1; then
+            continue
+        fi
+
+        test_dir="$candidate/.auto_train_tmp_write_test_$$"
+        if mkdir "$test_dir" >/dev/null 2>&1; then
+            rmdir "$test_dir" >/dev/null 2>&1 || true
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "No writable temporary directory found. Checked: /tmp/${user_name}/auto_train_tmp, $HOME/tmp" >&2
+    return 1
+}
+
+tmp_dir="$(resolve_tmp_dir)"
+wandb_dir="$tmp_dir/wandb"
+wandb_cache_dir="$tmp_dir/wandb-cache"
+
 command -v tmux >/dev/null 2>&1
 tmux has-session -t "$session_name" >/dev/null 2>&1 && exit 10
 tmux new-session -d -s "$session_name"
@@ -373,7 +425,17 @@ tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || 
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tmp"
+printf -v tmp_export 'export TMPDIR=%q TEMP=%q TMP=%q' "$tmp_dir" "$tmp_dir" "$tmp_dir"
+tmux send-keys -t "$session_name:train" -l "$tmp_export"
+tmux send-keys -t "$session_name:train" Enter
+printf -v wandb_export 'export WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_DATA_DIR=%q' "$wandb_dir" "$wandb_cache_dir" "$wandb_dir"
+tmux send-keys -t "$session_name:train" -l "$wandb_export"
+tmux send-keys -t "$session_name:train" Enter
+printf -v tmp_echo_command 'echo AUTO_TRAIN_TMPDIR=%q' "$tmp_dir"
+tmux send-keys -t "$session_name:train" -l "$tmp_echo_command"
+tmux send-keys -t "$session_name:train" Enter
+printf -v wandb_echo_command 'echo AUTO_TRAIN_WANDB_DIR=%q' "$wandb_dir"
+tmux send-keys -t "$session_name:train" -l "$wandb_echo_command"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
@@ -399,15 +461,15 @@ capture_tmux_output() {
 }
 
 extract_wandb_run_name() {
-    python3 - <<'PY'
+    python3 -c '
 import re
 import sys
 
 text = sys.stdin.read()
-text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 patterns = [
-    r'wandb run name\s*[:=]\s*(.+)',
-    r'wandb[: ]+run name\s*[:=]\s*(.+)',
+    r"wandb run name\s*[:=]\s*(.+)",
+    r"wandb[: ]+run name\s*[:=]\s*(.+)",
 ]
 
 for line in text.splitlines():
@@ -419,32 +481,32 @@ for line in text.splitlines():
             raise SystemExit(0)
 
 raise SystemExit(1)
-PY
+'
 }
 
 extract_failure_reason() {
-    python3 - <<'PY'
+    python3 -c '
 import re
 import sys
 
 text = sys.stdin.read()
-text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 patterns = [
-    r'^Traceback \(most recent call last\):.*',
-    r'^.*Error executing job with overrides:.*',
-    r'^.*FileNotFoundError:.*',
-    r'^.*ModuleNotFoundError:.*',
-    r'^.*RuntimeError:.*',
-    r'^.*OSError:.*',
-    r'^.*AssertionError:.*',
-    r'^.*UnboundLocalError:.*',
-    r'^.*ValueError:.*',
-    r'^.*KeyError:.*',
-    r'^.*IndexError:.*',
-    r'^.*TypeError:.*',
-    r'^.*No space left on device.*',
-    r'^.*command not found.*',
-    r'^.*Killed$',
+    r"^Traceback \(most recent call last\):.*",
+    r"^.*Error executing job with overrides:.*",
+    r"^.*FileNotFoundError:.*",
+    r"^.*ModuleNotFoundError:.*",
+    r"^.*RuntimeError:.*",
+    r"^.*OSError:.*",
+    r"^.*AssertionError:.*",
+    r"^.*UnboundLocalError:.*",
+    r"^.*ValueError:.*",
+    r"^.*KeyError:.*",
+    r"^.*IndexError:.*",
+    r"^.*TypeError:.*",
+    r"^.*No space left on device.*",
+    r"^.*command not found.*",
+    r"^.*Killed$",
 ]
 
 matches = []
@@ -463,7 +525,7 @@ if matches:
     raise SystemExit(0)
 
 raise SystemExit(1)
-PY
+'
 }
 
 main() {
