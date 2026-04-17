@@ -2,19 +2,21 @@
 
 set -euo pipefail
 
+# User-editable configuration
+
 # Comment out a line to skip that step.
 STEPS=(
     # collect_data
-    # process_pickles
+    process_pickles
     upload
 )
 
 LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
 # LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
-# REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
-REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
+REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
+# REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="236"
+REMOTE_SSH_HOST="240"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
@@ -22,9 +24,9 @@ UPLOAD_RETRY_DELAY_SECONDS=5
 
 # Comment out a line to skip that task for collect/process.
 TASKS=(
-    one_leg
+    # one_leg
     round_table
-    lamp
+    # lamp
 )
 
 declare -A TASK_CKPT=(  # relative to local root
@@ -46,7 +48,7 @@ declare -A TASK_ROLLOUT_AFTER_SUCCESS=(
 )
 
 COLLECT_N_ENVS=4
-COLLECT_N_ROLLOUTS=44  # 要多少数据
+COLLECT_N_ROLLOUTS=200  # 要多少数据
 COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
@@ -81,12 +83,15 @@ PROCESS_OUTCOME="success"
 PROCESS_SUFFIX="rgbd-skill"
 PROCESS_OUTPUT_SUFFIX="rgbd-skill"
 PROCESS_BATCH_SIZE=2
+PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${TMPDIR:-/tmp}/gpu-snatcher-auto-data-preparation}"
 
 PROCESS_FLAGS=(
     --overwrite
 )
 
 UPLOAD_RELATIVE_DIR="data/processed/diffik/sim"
+
+# Functions
 
 log_info() {
     printf '[%s] INFO %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -115,6 +120,20 @@ expand_path() {
 require_command() {
     local cmd="$1"
     command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
+}
+
+resolve_command_path() {
+    local cmd="$1"
+
+    if command -v "$cmd" >/dev/null 2>&1; then
+        command -v "$cmd"
+    elif [[ -x "/usr/bin/${cmd}" ]]; then
+        printf '%s\n' "/usr/bin/${cmd}"
+    elif [[ -x "/bin/${cmd}" ]]; then
+        printf '%s\n' "/bin/${cmd}"
+    else
+        die "Required command not found: $cmd"
+    fi
 }
 
 run_with_retry() {
@@ -217,41 +236,107 @@ get_processed_dataset_absolute_path() {
     printf '%s/%s\n' "${local_root%/}" "$(get_processed_dataset_relative_path)"
 }
 
-activate_conda_env() {
-    local env_name="$1"
-
+get_conda_executable() {
     if command -v conda >/dev/null 2>&1; then
-        eval "$(conda shell.bash hook 2>/dev/null)"
-    elif [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
-        source "$HOME/miniconda3/etc/profile.d/conda.sh"
-    elif [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
-        source "$HOME/anaconda3/etc/profile.d/conda.sh"
+        command -v conda
+    elif [[ -x "$HOME/miniconda3/bin/conda" ]]; then
+        printf '%s\n' "$HOME/miniconda3/bin/conda"
+    elif [[ -x "$HOME/anaconda3/bin/conda" ]]; then
+        printf '%s\n' "$HOME/anaconda3/bin/conda"
     else
-        die "Unable to initialize conda. Please install conda or update activate_conda_env()."
+        die "Unable to locate the conda executable. Please install conda or update get_conda_executable()."
     fi
+}
 
-    conda activate "$env_name"
+sanitize_ld_library_path() {
+    local raw_value="${1:-}"
+    local IFS=':'
+    local part
+    local -a parts=()
+    local -a filtered_parts=()
+
+    read -r -a parts <<< "$raw_value"
+    for part in "${parts[@]}"; do
+        [[ -n "$part" ]] || continue
+        case "$part" in
+            "$HOME"/anaconda3/lib|"$HOME"/anaconda3/envs/*/lib|"$HOME"/miniconda3/lib|"$HOME"/miniconda3/envs/*/lib)
+                continue
+                ;;
+        esac
+        filtered_parts+=("$part")
+    done
+
+    (
+        local IFS=':'
+        printf '%s\n' "${filtered_parts[*]}"
+    )
+}
+
+ensure_python_runtime_dirs() {
+    local cache_root="$1"
+
+    mkdir -p "${cache_root%/}/matplotlib" "${cache_root%/}/python"
 }
 
 run_python_command() {
     local local_root="$1"
     shift
+    local conda_exe sanitized_ld_library_path
     local -a cmd=( "$@" )
 
-    log_info "Running command in ${local_root}: $(quote_command "${cmd[@]}")"
-    (
-        cd "$local_root"
-        activate_conda_env "$CONDA_ENV"
+    conda_exe="$(get_conda_executable)"
+    ensure_python_runtime_dirs "$PYTHON_RUNTIME_CACHE_ROOT"
+    sanitized_ld_library_path="$(sanitize_ld_library_path "${LD_LIBRARY_PATH:-}")"
+
+    log_info "Running command in ${local_root} with conda env ${CONDA_ENV}: $(quote_command "${cmd[@]}")"
+    env \
+        LD_LIBRARY_PATH="$sanitized_ld_library_path" \
+        MPLCONFIGDIR="${PYTHON_RUNTIME_CACHE_ROOT%/}/matplotlib" \
+        PYTHONNOUSERSITE=1 \
+        PYTHONPYCACHEPREFIX="${PYTHON_RUNTIME_CACHE_ROOT%/}/python" \
+        "$conda_exe" \
+        run \
+        --cwd "$local_root" \
+        --no-capture-output \
+        -n "$CONDA_ENV" \
         "${cmd[@]}"
+}
+
+check_process_runtime_dependencies() {
+    local local_root="$1"
+
+    run_python_command "$local_root" python - <<'PY'
+import importlib
+import sys
+import traceback
+
+required_modules = ("lmdb",)
+failures = []
+
+for module_name in required_modules:
+    try:
+        importlib.import_module(module_name)
+    except Exception as exc:  # pragma: no cover - shell preflight
+        failures.append((module_name, exc, traceback.format_exc()))
+
+if failures:
+    print("Python dependency check failed before process_pickles_to_lmdb.", file=sys.stderr)
+    for module_name, exc, tb in failures:
+        print(f"[dependency] {module_name}: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(tb, file=sys.stderr)
+    print(
+        "Reinstall the broken package inside the target env, for example: "
+        "conda run -n rr python -m pip install --force-reinstall lmdb",
+        file=sys.stderr,
     )
+    raise SystemExit(1)
+PY
 }
 
 collect_data_step() {
     local local_root="$1"
     local task checkpoint_path max_rollout_steps rollout_after_success
     local -a collect_cmd
-
-    require_command python3
 
     for task in "${TASKS[@]}"; do
         [[ -n "${TASK_CKPT[$task]+x}" ]] || die "TASK_CKPT is missing task: ${task}"
@@ -287,8 +372,8 @@ process_pickles_step() {
     local -a task_episode_limit_args
     local -a process_cmd
 
-    require_command python3
     mapfile -t task_episode_limit_args < <(build_task_episode_limit_args)
+    check_process_runtime_dependencies "$local_root"
 
     process_cmd=(
         python -m src.data_processing.process_pickles_to_lmdb
@@ -311,7 +396,8 @@ process_pickles_step() {
 
 upload_step() {
     local local_root="$1"
-    local dataset_upload_dir remote_ssh_host remote_dataset_dir
+    local dataset_upload_dir remote_ssh_host remote_dataset_dir sanitized_ld_library_path
+    local ssh_bin rsync_bin
     local remote_mkdir_cmd
     local -a ssh_mkdir_cmd
     local -a rsync_upload_cmd
@@ -325,9 +411,10 @@ upload_step() {
 
     [[ -n "$remote_ssh_host" ]] || die "REMOTE_SSH_HOST is required for upload."
 
-    require_command ssh
-    require_command rsync
-    rsync_ssh_cmd="ssh -o BatchMode=yes -o ConnectTimeout=${CONNECT_TIMEOUT_SECONDS} -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+    ssh_bin="$(resolve_command_path ssh)"
+    rsync_bin="$(resolve_command_path rsync)"
+    sanitized_ld_library_path="$(sanitize_ld_library_path "${LD_LIBRARY_PATH:-}")"
+    rsync_ssh_cmd="${ssh_bin} -o BatchMode=yes -o ConnectTimeout=${CONNECT_TIMEOUT_SECONDS} -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 
     if [[ "$remote_dataset_dir" == "~/"* ]]; then
         remote_mkdir_cmd="mkdir -p -- ~/${remote_dataset_dir#~/}"
@@ -336,7 +423,9 @@ upload_step() {
     fi
 
     ssh_mkdir_cmd=(
-        ssh
+        env
+        "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
+        "$ssh_bin"
         -o BatchMode=yes \
         -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         -o ServerAliveInterval=5
@@ -345,7 +434,9 @@ upload_step() {
         "$remote_mkdir_cmd"
     )
     rsync_upload_cmd=(
-        rsync
+        env
+        "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
+        "$rsync_bin"
         -a
         --no-owner
         --no-group
@@ -373,6 +464,9 @@ upload_step() {
 
 main() {
     local local_root step
+
+    export LD_LIBRARY_PATH
+    LD_LIBRARY_PATH="$(sanitize_ld_library_path "${LD_LIBRARY_PATH:-}")"
 
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
