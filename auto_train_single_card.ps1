@@ -12,6 +12,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$global:DATA_STORAGE_FORMAT = "lmdb"
+$global:DATA_LOAD_INTO_MEMORY = "false"
+$global:DATA_PATHS_OVERRIDE = ""
+
 # 单卡训练命令
 $global:TRAIN_COMMAND_PARTS = @(
     "python",
@@ -22,6 +26,8 @@ $global:TRAIN_COMMAND_PARTS = @(
     "data.demo_source=rollout",
     "data.demo_outcome=success",
     "data.suffix=rgbd-skill",
+    "data.storage_format=$global:DATA_STORAGE_FORMAT",
+    "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
     "data.data_subset=50",
     "training.batch_size=256",
     "training.num_epochs=4000",
@@ -34,6 +40,9 @@ $global:TRAIN_COMMAND_PARTS = @(
     "dryrun=false",
     "wandb.continue_run_id=e56mvprj"
 )
+if (-not [string]::IsNullOrWhiteSpace($global:DATA_PATHS_OVERRIDE)) {
+    $global:TRAIN_COMMAND_PARTS += "data.data_paths_override=$global:DATA_PATHS_OVERRIDE"
+}
 
 # 多卡训练命令
 $global:TRAIN_COMMAND = [string]::Join(' ', ($global:TRAIN_COMMAND_PARTS | ForEach-Object {

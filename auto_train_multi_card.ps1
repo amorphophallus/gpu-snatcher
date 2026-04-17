@@ -39,6 +39,10 @@ function ConvertTo-CommandString {
     }))
 }
 
+$global:DATA_STORAGE_FORMAT = "lmdb"
+$global:DATA_LOAD_INTO_MEMORY = "false"
+$global:DATA_PATHS_OVERRIDE = ""
+
 # Multi-card training command.
 $global:TRAIN_COMMAND_PARTS = @(
     "torchrun",
@@ -49,23 +53,28 @@ $global:TRAIN_COMMAND_PARTS = @(
     "+experiment=rgbd/diff_unet",
     "task=[one_leg,round_table,lamp]",
     "data.demo_source=rollout",
-    "data.data_subset=500",
+    "data.data_subset=200",
     "data.demo_outcome=success",
     "data.suffix=rgbd-skill",
+    "data.storage_format=$global:DATA_STORAGE_FORMAT",
+    "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
     "training.batch_size=512",
     "training.num_epochs=3000",
-    "training.steps_per_epoch=-1",
+    "training.steps_per_epoch=100",
     "training.save_per_epoch=500",
     "wandb.project=multi-task-rgbd-skill-low-500",
     "wandb.mode=online",
     "randomness=low",
     "dryrun=false",
-    "data.load_into_memory=true"
+    "data.ddp_shard_enabled=true"
 )
+if (-not [string]::IsNullOrWhiteSpace($global:DATA_PATHS_OVERRIDE)) {
+    $global:TRAIN_COMMAND_PARTS += "data.data_paths_override=$global:DATA_PATHS_OVERRIDE"
+}
 $global:TRAIN_COMMAND = ConvertTo-CommandString -Parts $global:TRAIN_COMMAND_PARTS
-$global:SSH_NAME = "232"
+$global:SSH_NAME = "240"
 $global:NUM_GPUs = 2
-$global:GPU_ID = "1,3"
+$global:GPU_ID = "1,2"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
 $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"

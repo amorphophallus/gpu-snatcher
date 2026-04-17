@@ -11,7 +11,11 @@ print(shlex.join(sys.argv[1:]))
 PY
 }
 
-# 单卡训练命令（默认启用）
+DATA_STORAGE_FORMAT="lmdb"
+DATA_LOAD_INTO_MEMORY="false"
+DATA_PATHS_OVERRIDE=""
+
+# Single-card training command.
 TRAIN_COMMAND_PARTS=(
     python
     -m
@@ -21,6 +25,8 @@ TRAIN_COMMAND_PARTS=(
     data.demo_source=rollout
     data.demo_outcome=success
     data.suffix=rgbd-skill
+    "data.storage_format=${DATA_STORAGE_FORMAT}"
+    "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     data.data_subset=50
     training.batch_size=256
     training.num_epochs=5000
@@ -33,7 +39,10 @@ TRAIN_COMMAND_PARTS=(
     dryrun=false
 )
 
-# 多卡训练命令（启用时：注释掉上面的单卡块，再取消下面块的注释）
+# Optional explicit dataset override.
+if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
+fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="230"
 GPU_ID="0"

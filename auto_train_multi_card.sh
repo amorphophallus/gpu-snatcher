@@ -11,6 +11,10 @@ print(shlex.join(sys.argv[1:]))
 PY
 }
 
+DATA_STORAGE_FORMAT="lmdb"
+DATA_LOAD_INTO_MEMORY="false"
+DATA_PATHS_OVERRIDE=""
+
 # Multi-card training command.
 TRAIN_COMMAND_PARTS=(
     torchrun
@@ -24,6 +28,8 @@ TRAIN_COMMAND_PARTS=(
     data.data_subset=500
     data.demo_outcome=success
     data.suffix=rgbd-skill
+    "data.storage_format=${DATA_STORAGE_FORMAT}"
+    "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     training.batch_size=512
     training.num_epochs=3000
     training.steps_per_epoch=-1
@@ -32,8 +38,11 @@ TRAIN_COMMAND_PARTS=(
     wandb.mode=online
     randomness=low
     dryrun=false
-    data.load_into_memory=true
+    data.ddp_shard_enabled=true
 )
+if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
+fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 SSH_NAME="232"
 NUM_GPUS="2"
