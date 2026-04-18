@@ -11,6 +11,21 @@ print(shlex.join(sys.argv[1:]))
 PY
 }
 
+get_command_part_value() {
+    local key="$1"
+    shift
+    local part
+
+    for part in "$@"; do
+        if [[ "$part" == "$key="* ]]; then
+            printf '%s\n' "${part#"$key="}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
@@ -44,6 +59,8 @@ if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
     TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
 fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
+WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
+WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
 SSH_NAME="232"
 NUM_GPUS="2"
 GPU_ID="2,3"
@@ -557,7 +574,7 @@ start_remote_training() {
         -o BatchMode=yes \
         -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         "$host_alias" \
-        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" <<'REMOTE'
+        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" <<'REMOTE'
 set -euo pipefail
 
 session_name="$1"
@@ -565,6 +582,7 @@ project_dir="$2"
 conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
+wandb_project_name="${6:-project}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 command -v tmux >/dev/null 2>&1
@@ -578,7 +596,18 @@ tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || 
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tmp"
+wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za-z0-9._-' '_')"
+if [[ -z "$wandb_project_slug" ]]; then
+    wandb_project_slug="project"
+fi
+runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+wandb_cache_dir="${runtime_tmp_dir}/cache"
+wandb_config_dir="${runtime_tmp_dir}/config"
+wandb_data_dir="${runtime_tmp_dir}/data"
+wandb_artifact_dir="${runtime_tmp_dir}/artifacts"
+mkdir -p "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+printf -v runtime_env_export 'export TMPDIR=%q TEMP=%q TMP=%q WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_CONFIG_DIR=%q WANDB_DATA_DIR=%q WANDB_ARTIFACT_DIR=%q' "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+tmux send-keys -t "$session_name:train" -l "$runtime_env_export"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter

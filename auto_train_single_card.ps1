@@ -12,6 +12,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Get-CommandPartValue {
+    param(
+        [string[]]$Parts,
+        [string]$Key
+    )
+
+    $prefix = "$Key="
+    foreach ($part in $Parts) {
+        if (($null -ne $part) -and $part.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+            return $part.Substring($prefix.Length)
+        }
+    }
+
+    return $null
+}
+
 $global:DATA_STORAGE_FORMAT = "lmdb"
 $global:DATA_LOAD_INTO_MEMORY = "false"
 $global:DATA_PATHS_OVERRIDE = ""
@@ -45,6 +61,11 @@ if (-not [string]::IsNullOrWhiteSpace($global:DATA_PATHS_OVERRIDE)) {
 }
 
 # 多卡训练命令
+$global:WANDB_PROJECT_NAME = Get-CommandPartValue -Parts $global:TRAIN_COMMAND_PARTS -Key "wandb.project"
+if ([string]::IsNullOrWhiteSpace($global:WANDB_PROJECT_NAME)) {
+    $global:WANDB_PROJECT_NAME = "project"
+}
+
 $global:TRAIN_COMMAND = [string]::Join(' ', ($global:TRAIN_COMMAND_PARTS | ForEach-Object {
     if ($_ -match '[\s"]') {
         '"' + ($_ -replace '"', '\"') + '"'
@@ -71,6 +92,16 @@ $sessionNameCandidates = @(
     "river",
     "stone"
 )
+
+function ConvertTo-UnixLineEndings {
+    param([string]$Text)
+
+    if ($null -eq $Text) {
+        return $null
+    }
+
+    return ($Text -replace "`r`n", "`n") -replace "`r", "`n"
+}
 
 function ConvertTo-SshArgumentString {
     param([string[]]$Arguments)
@@ -389,7 +420,8 @@ function Start-RemoteTraining {
         [string]$HostAlias,
         [string]$SessionName,
         [string]$PreparedCommand,
-        [string]$DataDirProcessed
+        [string]$DataDirProcessed,
+        [string]$WandbProjectName
     )
 
     $remoteScript = @'
@@ -400,6 +432,7 @@ project_dir="$2"
 conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
+wandb_project_name="${6:-project}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 command -v tmux >/dev/null 2>&1
@@ -413,7 +446,18 @@ tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || 
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-tmux send-keys -t "$session_name:train" -l "export TMPDIR=/tmp TEMP=/tmp TMP=/tmp"
+wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za-z0-9._-' '_')"
+if [[ -z "$wandb_project_slug" ]]; then
+    wandb_project_slug="project"
+fi
+runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+wandb_cache_dir="${runtime_tmp_dir}/cache"
+wandb_config_dir="${runtime_tmp_dir}/config"
+wandb_data_dir="${runtime_tmp_dir}/data"
+wandb_artifact_dir="${runtime_tmp_dir}/artifacts"
+mkdir -p "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+printf -v runtime_env_export 'export TMPDIR=%q TEMP=%q TMP=%q WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_CONFIG_DIR=%q WANDB_DATA_DIR=%q WANDB_ARTIFACT_DIR=%q' "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+tmux send-keys -t "$session_name:train" -l "$runtime_env_export"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
@@ -438,7 +482,8 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
         $RemoteProjectDir,
         $RemoteCondaEnv,
         ([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($PreparedCommand))),
-        $DataDirProcessed
+        $DataDirProcessed,
+        $WandbProjectName
     )
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -455,7 +500,7 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
 
     try {
         [void]$process.Start()
-        $process.StandardInput.Write($remoteScript)
+        $process.StandardInput.Write((ConvertTo-UnixLineEndings -Text $remoteScript))
         $process.StandardInput.Close()
 
         $stdout = $process.StandardOutput.ReadToEnd()
@@ -594,7 +639,7 @@ if (-not [string]::IsNullOrWhiteSpace(($SSH_NAME -replace '\s', '')) -and -not [
 $preparedCommand = Prepare-TrainCommand -GpuId $selection.GpuId
 $commandName = Get-CommandName -Command $preparedCommand
 $sessionName = Get-AvailableTmuxSessionName -HostAlias $selection.HostAlias
-$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED
+$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED -WandbProjectName $WANDB_PROJECT_NAME
 
 if ($startResult.ExitCode -ne 0) {
     [Console]::Error.WriteLine("Failed to start tmux session '$sessionName' on $($selection.HostAlias).")
