@@ -7,7 +7,7 @@ set -euo pipefail
 # Comment out a line to skip that step.
 STEPS=(
     # collect_data
-    process_pickles
+    # process_pickles
     upload
 )
 
@@ -16,11 +16,15 @@ LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
 REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
 # REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="240"
+REMOTE_SSH_HOST="228"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
 UPLOAD_RETRY_DELAY_SECONDS=5
+SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
+SSH_SERVER_ALIVE_INTERVAL_SECONDS="${SSH_SERVER_ALIVE_INTERVAL_SECONDS:-15}"
+SSH_SERVER_ALIVE_COUNT_MAX="${SSH_SERVER_ALIVE_COUNT_MAX:-12}"
+UPLOAD_BWLIMIT="${UPLOAD_BWLIMIT:-100m}"
 
 # Comment out a line to skip that task for collect/process.
 TASKS=(
@@ -399,9 +403,12 @@ upload_step() {
     local dataset_upload_dir remote_ssh_host remote_dataset_dir sanitized_ld_library_path
     local ssh_bin rsync_bin
     local remote_mkdir_cmd
+    local remote_probe_cmd
     local -a ssh_mkdir_cmd
+    local -a ssh_probe_cmd
     local -a rsync_upload_cmd
     local rsync_ssh_cmd
+    local -a ssh_common_args
 
     dataset_upload_dir="$(get_processed_dataset_absolute_path "$local_root")"
     [[ -d "$dataset_upload_dir" ]] || die "Merged LMDB directory does not exist: ${dataset_upload_dir}"
@@ -414,24 +421,39 @@ upload_step() {
     ssh_bin="$(resolve_command_path ssh)"
     rsync_bin="$(resolve_command_path rsync)"
     sanitized_ld_library_path="$(sanitize_ld_library_path "${LD_LIBRARY_PATH:-}")"
-    rsync_ssh_cmd="${ssh_bin} -o BatchMode=yes -o ConnectTimeout=${CONNECT_TIMEOUT_SECONDS} -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+    ssh_common_args=(
+        -o BatchMode=yes
+        -o StrictHostKeyChecking="$SSH_STRICT_HOST_KEY_CHECKING"
+        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS"
+        -o ServerAliveInterval="$SSH_SERVER_ALIVE_INTERVAL_SECONDS"
+        -o ServerAliveCountMax="$SSH_SERVER_ALIVE_COUNT_MAX"
+        -o TCPKeepAlive=yes
+        -o IPQoS=throughput
+    )
+    rsync_ssh_cmd="$(quote_command "$ssh_bin" "${ssh_common_args[@]}")"
 
     if [[ "$remote_dataset_dir" == "~/"* ]]; then
         remote_mkdir_cmd="mkdir -p -- ~/${remote_dataset_dir#~/}"
     else
         printf -v remote_mkdir_cmd 'mkdir -p -- %q' "$remote_dataset_dir"
     fi
+    printf -v remote_probe_cmd 'command -v rsync >/dev/null 2>&1 && test -d %q && test -w %q' "${REMOTE_PATH%/}" "${REMOTE_PATH%/}"
 
     ssh_mkdir_cmd=(
         env
         "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
         "$ssh_bin"
-        -o BatchMode=yes \
-        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        -o ServerAliveInterval=5
-        -o ServerAliveCountMax=3
+        "${ssh_common_args[@]}"
         "$remote_ssh_host"
         "$remote_mkdir_cmd"
+    )
+    ssh_probe_cmd=(
+        env
+        "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
+        "$ssh_bin"
+        "${ssh_common_args[@]}"
+        "$remote_ssh_host"
+        "$remote_probe_cmd"
     )
     rsync_upload_cmd=(
         env
@@ -440,6 +462,7 @@ upload_step() {
         -a
         --no-owner
         --no-group
+        --partial
         --partial-dir=.rsync-partial
         --human-readable
         --info=progress2
@@ -448,6 +471,15 @@ upload_step() {
         "${dataset_upload_dir}/"
         "${remote_ssh_host}:${remote_dataset_dir}/"
     )
+    if [[ -n "${UPLOAD_BWLIMIT// }" && "${UPLOAD_BWLIMIT}" != "0" ]]; then
+        rsync_upload_cmd+=( "--bwlimit=${UPLOAD_BWLIMIT}" )
+    fi
+
+    run_with_retry \
+        "$UPLOAD_MAX_RETRIES" \
+        "$UPLOAD_RETRY_DELAY_SECONDS" \
+        "Checking remote upload prerequisites on ${remote_ssh_host}" \
+        "${ssh_probe_cmd[@]}"
 
     run_with_retry \
         "$UPLOAD_MAX_RETRIES" \
