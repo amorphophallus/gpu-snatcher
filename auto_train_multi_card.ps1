@@ -66,7 +66,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "--nproc_per_node=2",
     "-m",
     "src.train.bc_ddp",
-    "+experiment=rgbd/diff_unet",
+    "+experiment=rgbd/dit",  # diff_unet, dit, fmt
     "task=round_table",
     "data.demo_source=rollout",
     "data.data_subset=200",
@@ -92,12 +92,13 @@ $global:WANDB_PROJECT_NAME = Get-CommandPartValue -Parts $global:TRAIN_COMMAND_P
 if ([string]::IsNullOrWhiteSpace($global:WANDB_PROJECT_NAME)) {
     $global:WANDB_PROJECT_NAME = "project"
 }
-$global:SSH_NAME = "228"
+$global:SSH_NAME = "236"
 $global:NUM_GPUs = 2
 $global:GPU_ID = ""
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
-$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"
+# $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
+$global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
     "birch",
@@ -711,12 +712,27 @@ data_dir_processed="${5:-}"
 wandb_project_name="${6:-project}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
+expand_path() {
+    local path="$1"
+    if [[ "$path" == "~" ]]; then
+        printf '%s\n' "$HOME"
+    elif [[ "$path" == "~/"* ]]; then
+        printf '%s\n' "$HOME/${path#"~/"}"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
+project_dir="$(expand_path "$project_dir")"
+data_dir_processed="$(expand_path "$data_dir_processed")"
+
 command -v tmux >/dev/null 2>&1
 tmux has-session -t "$session_name" >/dev/null 2>&1 && exit 10
 tmux new-session -d -s "$session_name"
 tmux set-option -t "$session_name" remain-on-exit on
 tmux new-window -t "$session_name" -n train
-tmux send-keys -t "$session_name:train" -l "cd $project_dir"
+printf -v project_cd_command 'cd %q' "$project_dir"
+tmux send-keys -t "$session_name:train" -l "$project_cd_command"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || true"
 tmux send-keys -t "$session_name:train" Enter
