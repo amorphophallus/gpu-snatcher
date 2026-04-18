@@ -98,7 +98,7 @@ $global:GPU_ID = ""
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
 # $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
-$global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/"  # home, for 236
+$global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
     "birch",

@@ -65,7 +65,7 @@ SSH_NAME="232"
 NUM_GPUS="2"
 GPU_ID="2,3"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
-DATA_DIR_PROCESSED="~/robust-rearrangement-custom/"  # home, for 236
+DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240)
 
