@@ -66,7 +66,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "--nproc_per_node=2",
     "-m",
     "src.train.bc_ddp",
-    "+experiment=rgbd/fmt",  # diff_unet, dit, fmt
+    "+experiment=rgbd/dit",  # diff_unet, dit, fmt
     "task=round_table",
     "data.demo_source=rollout",
     "data.data_subset=100",
@@ -92,13 +92,13 @@ $global:WANDB_PROJECT_NAME = Get-CommandPartValue -Parts $global:TRAIN_COMMAND_P
 if ([string]::IsNullOrWhiteSpace($global:WANDB_PROJECT_NAME)) {
     $global:WANDB_PROJECT_NAME = "project"
 }
-$global:SSH_NAME = "236"
+$global:SSH_NAME = "232"
 $global:NUM_GPUs = 2
 $global:GPU_ID = ""
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
-# $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
-$global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
+$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
+# $global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
     "birch",

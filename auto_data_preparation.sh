@@ -398,38 +398,54 @@ process_pickles_step() {
     run_python_command "$local_root" "${process_cmd[@]}"
 }
 
-try_direct_nas_copy() {
+try_direct_nas_rsync() {
     local source_dir="$1"
     local target_dir="$2"
-    local cp_bin
+    local rsync_bin
     local status
+    local -a direct_rsync_cmd
 
-    log_info "REMOTE_PATH is under /mnt/nas; trying direct cp before rsync."
-    log_info "Direct copy source: ${source_dir}"
-    log_info "Direct copy target: ${target_dir}"
+    log_info "REMOTE_PATH is under /mnt/nas; trying direct local rsync before SSH rsync."
+    log_info "Direct rsync source: ${source_dir}"
+    log_info "Direct rsync target: ${target_dir}"
 
-    cp_bin="$(command -v cp 2>/dev/null || true)"
-    if [[ -z "$cp_bin" ]]; then
-        log_info "cp command not found; falling back to rsync."
+    rsync_bin="$(command -v rsync 2>/dev/null || true)"
+    if [[ -z "$rsync_bin" ]]; then
+        log_info "Local rsync command not found; falling back to SSH rsync."
         return 1
     fi
 
-    log_info "Ensuring direct copy target directory exists: ${target_dir}"
+    log_info "Ensuring direct rsync target directory exists: ${target_dir}"
     if mkdir -p "$target_dir"; then
-        log_info "Direct copy target directory is ready: ${target_dir}"
+        log_info "Direct rsync target directory is ready: ${target_dir}"
     else
         status=$?
-        log_info "Direct copy mkdir failed with exit code ${status}; falling back to rsync."
+        log_info "Direct rsync mkdir failed with exit code ${status}; falling back to SSH rsync."
         return "$status"
     fi
 
-    log_info "Copying merged LMDB to mounted NAS with cp -a. This can take a while for large datasets."
-    if "$cp_bin" -a "${source_dir}/." "${target_dir}/"; then
-        log_info "Direct NAS copy finished successfully: ${target_dir}"
+    direct_rsync_cmd=(
+        "$rsync_bin"
+        -a
+        --no-owner
+        --no-group
+        --partial
+        --partial-dir=.rsync-partial
+        --human-readable
+        --info=progress2
+    )
+    if [[ -n "${UPLOAD_BWLIMIT// }" && "${UPLOAD_BWLIMIT}" != "0" ]]; then
+        direct_rsync_cmd+=( "--bwlimit=${UPLOAD_BWLIMIT}" )
+    fi
+    direct_rsync_cmd+=( "${source_dir}/" "${target_dir}/" )
+
+    log_info "Copying merged LMDB to mounted NAS with local rsync progress. This can take a while for large datasets."
+    if "${direct_rsync_cmd[@]}"; then
+        log_info "Direct NAS rsync finished successfully: ${target_dir}"
         return 0
     else
         status=$?
-        log_info "Direct NAS copy failed with exit code ${status}; falling back to rsync via SSH."
+        log_info "Direct NAS rsync failed with exit code ${status}; falling back to SSH rsync."
         return "$status"
     fi
 }
@@ -453,7 +469,7 @@ upload_step() {
     remote_dataset_dir="${REMOTE_PATH%/}/$(get_processed_dataset_relative_path)"
 
     if [[ "$remote_dataset_dir" == /mnt/nas* ]]; then
-        if try_direct_nas_copy "$dataset_upload_dir" "$remote_dataset_dir"; then
+        if try_direct_nas_rsync "$dataset_upload_dir" "$remote_dataset_dir"; then
             return 0
         fi
     fi
