@@ -66,10 +66,10 @@ $global:TRAIN_COMMAND_PARTS = @(
     "--nproc_per_node=2",
     "-m",
     "src.train.bc_ddp",
-    "+experiment=rgbd/dit",  # diff_unet, dit, fmt
+    "+experiment=rgbd/fmt",  # diff_unet, dit, fmt
     "task=round_table",
     "data.demo_source=rollout",
-    "data.data_subset=200",
+    "data.data_subset=100",
     "data.demo_outcome=success",
     "data.suffix=rgbd-skill",
     "data.storage_format=$global:DATA_STORAGE_FORMAT",

@@ -398,6 +398,42 @@ process_pickles_step() {
     run_python_command "$local_root" "${process_cmd[@]}"
 }
 
+try_direct_nas_copy() {
+    local source_dir="$1"
+    local target_dir="$2"
+    local cp_bin
+    local status
+
+    log_info "REMOTE_PATH is under /mnt/nas; trying direct cp before rsync."
+    log_info "Direct copy source: ${source_dir}"
+    log_info "Direct copy target: ${target_dir}"
+
+    cp_bin="$(command -v cp 2>/dev/null || true)"
+    if [[ -z "$cp_bin" ]]; then
+        log_info "cp command not found; falling back to rsync."
+        return 1
+    fi
+
+    log_info "Ensuring direct copy target directory exists: ${target_dir}"
+    if mkdir -p "$target_dir"; then
+        log_info "Direct copy target directory is ready: ${target_dir}"
+    else
+        status=$?
+        log_info "Direct copy mkdir failed with exit code ${status}; falling back to rsync."
+        return "$status"
+    fi
+
+    log_info "Copying merged LMDB to mounted NAS with cp -a. This can take a while for large datasets."
+    if "$cp_bin" -a "${source_dir}/." "${target_dir}/"; then
+        log_info "Direct NAS copy finished successfully: ${target_dir}"
+        return 0
+    else
+        status=$?
+        log_info "Direct NAS copy failed with exit code ${status}; falling back to rsync via SSH."
+        return "$status"
+    fi
+}
+
 upload_step() {
     local local_root="$1"
     local dataset_upload_dir remote_ssh_host remote_dataset_dir sanitized_ld_library_path
@@ -415,6 +451,12 @@ upload_step() {
 
     remote_ssh_host="$(normalize_remote_ssh_host "${REMOTE_SSH_HOST:-}")"
     remote_dataset_dir="${REMOTE_PATH%/}/$(get_processed_dataset_relative_path)"
+
+    if [[ "$remote_dataset_dir" == /mnt/nas* ]]; then
+        if try_direct_nas_copy "$dataset_upload_dir" "$remote_dataset_dir"; then
+            return 0
+        fi
+    fi
 
     [[ -n "$remote_ssh_host" ]] || die "REMOTE_SSH_HOST is required for upload."
 
