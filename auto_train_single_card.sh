@@ -467,15 +467,15 @@ capture_tmux_output() {
 }
 
 extract_wandb_run_name() {
-    python3 -c '
+    python3 - <<'PY'
 import re
 import sys
 
 text = sys.stdin.read()
-text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
 patterns = [
-    r"wandb run name\s*[:=]\s*(.+)",
-    r"wandb[: ]+run name\s*[:=]\s*(.+)",
+    r'wandb run name\s*[:=]\s*(.+)',
+    r'wandb[: ]+run name\s*[:=]\s*(.+)',
 ]
 
 for line in text.splitlines():
@@ -487,32 +487,32 @@ for line in text.splitlines():
             raise SystemExit(0)
 
 raise SystemExit(1)
-'
+PY
 }
 
 extract_failure_reason() {
-    python3 -c '
+    python3 - <<'PY'
 import re
 import sys
 
 text = sys.stdin.read()
-text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
 patterns = [
-    r"^Traceback \(most recent call last\):.*",
-    r"^.*Error executing job with overrides:.*",
-    r"^.*FileNotFoundError:.*",
-    r"^.*ModuleNotFoundError:.*",
-    r"^.*RuntimeError:.*",
-    r"^.*OSError:.*",
-    r"^.*AssertionError:.*",
-    r"^.*UnboundLocalError:.*",
-    r"^.*ValueError:.*",
-    r"^.*KeyError:.*",
-    r"^.*IndexError:.*",
-    r"^.*TypeError:.*",
-    r"^.*No space left on device.*",
-    r"^.*command not found.*",
-    r"^.*Killed$",
+    r'^Traceback \(most recent call last\):.*',
+    r'^.*Error executing job with overrides:.*',
+    r'^.*FileNotFoundError:.*',
+    r'^.*ModuleNotFoundError:.*',
+    r'^.*RuntimeError:.*',
+    r'^.*OSError:.*',
+    r'^.*AssertionError:.*',
+    r'^.*UnboundLocalError:.*',
+    r'^.*ValueError:.*',
+    r'^.*KeyError:.*',
+    r'^.*IndexError:.*',
+    r'^.*TypeError:.*',
+    r'^.*No space left on device.*',
+    r'^.*command not found.*',
+    r'^.*Killed$',
 ]
 
 matches = []
@@ -531,7 +531,7 @@ if matches:
     raise SystemExit(0)
 
 raise SystemExit(1)
-'
+PY
 }
 
 main() {

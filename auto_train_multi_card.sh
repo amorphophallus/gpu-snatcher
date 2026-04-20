@@ -38,16 +38,16 @@ TRAIN_COMMAND_PARTS=(
     -m
     src.train.bc_ddp
     +experiment=rgbd/diff_unet
-    "task=round_table"
+    "task=[one_leg,round_table,lamp]"
     data.demo_source=rollout
-    data.data_subset=100
+    data.data_subset=500
     data.demo_outcome=success
     data.suffix=rgbd-skill
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     training.batch_size=512
     training.num_epochs=3000
-    training.steps_per_epoch=100  # default: 100
+    training.steps_per_epoch=-1
     training.save_per_epoch=500
     wandb.project=multi-task-rgbd-skill-low-500
     wandb.mode=online
@@ -110,7 +110,7 @@ get_hosts_from_ssh_config() {
                 }
             }
         }
-    ' "$SSH_CONFIG_PATH" | sort -u
+    ' "$SSH_CONFIG_PATH" | awk '!seen[$0]++'
 }
 
 normalize_ssh_host() {
@@ -247,7 +247,7 @@ list_hosts_by_priority() {
     fast_csv="$(IFS=,; echo "${FAST_SERVER[*]}")"
     slow_csv="$(IFS=,; echo "${SLOW_SERVER[*]}")"
 
-    get_hosts_from_ssh_config | python3 -c '
+    get_hosts_from_ssh_config | python3 - "$fast_csv" "$slow_csv" <<'PY'
 import re
 import sys
 
@@ -268,7 +268,7 @@ def sort_key(host):
 
 for host in sorted(dict.fromkeys(hosts), key=sort_key):
     print(host)
-' "$fast_csv" "$slow_csv"
+PY
 }
 
 parse_extra_args() {
@@ -293,7 +293,7 @@ select_gpus_on_host() {
     local preferred_gpu_csv="${3:-}"
     local force="${4:-0}"
 
-    python3 -c '
+    python3 - "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force" <<'PY'
 import sys
 
 host_alias = sys.argv[1]
@@ -392,7 +392,7 @@ if len(selected_gpu_ids) < num_gpus:
 gpu_ids_csv = ",".join(str(gpu_id) for gpu_id in selected_gpu_ids)
 gpu_utils_csv = ",".join(str(int(round(free_gpus[gpu_id]["util"]))) for gpu_id in selected_gpu_ids)
 print(f"OK|{host_alias}|{gpu_ids_csv}|{gpu_utils_csv}|{len(free_gpus)}")
-' "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force"
+PY
 }
 
 find_multi_gpu_target_or_error() {
@@ -414,7 +414,7 @@ find_multi_gpu_target_or_error() {
 
     if [[ -n "${ssh_name// }" ]]; then
         host_alias="$(normalize_ssh_host "$ssh_name")"
-        selection_result="$(select_gpus_on_host "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force" < <(get_host_gpu_status "$host_alias"))"
+        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force")"
         IFS='|' read -r status _ field2 field3 field4 <<< "$selection_result"
 
         case "$status" in
@@ -448,7 +448,7 @@ find_multi_gpu_target_or_error() {
 
     while IFS= read -r host_alias; do
         [[ -z "$host_alias" ]] && continue
-        selection_result="$(select_gpus_on_host "$host_alias" "$num_gpus" "" "0" < <(get_host_gpu_status "$host_alias"))"
+        selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "" "0")"
         IFS='|' read -r status _ _ _ _ <<< "$selection_result"
         if [[ "$status" == "OK" ]]; then
             printf '%s\n' "$selection_result"
@@ -459,7 +459,7 @@ find_multi_gpu_target_or_error() {
     if [[ "$force" == "1" ]]; then
         while IFS= read -r host_alias; do
             [[ -z "$host_alias" ]] && continue
-            selection_result="$(select_gpus_on_host "$host_alias" "$num_gpus" "" "1" < <(get_host_gpu_status "$host_alias"))"
+            selection_result="$(get_host_gpu_status "$host_alias" | select_gpus_on_host "$host_alias" "$num_gpus" "" "1")"
             IFS='|' read -r status _ _ field3 field4 <<< "$selection_result"
             if [[ "$status" == "FORCED" ]]; then
                 echo "Host '$host_alias' has only $field3 free GPUs; need $field4. Continue due to --force." >&2
@@ -664,15 +664,15 @@ capture_tmux_output() {
 }
 
 extract_wandb_run_name() {
-    python3 -c '
+    python3 - <<'PY'
 import re
 import sys
 
 text = sys.stdin.read()
-text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
 patterns = [
-    r"wandb run name\s*[:=]\s*(.+)",
-    r"wandb[: ]+run name\s*[:=]\s*(.+)",
+    r'wandb run name\s*[:=]\s*(.+)',
+    r'wandb[: ]+run name\s*[:=]\s*(.+)',
 ]
 
 for line in text.splitlines():
@@ -684,32 +684,32 @@ for line in text.splitlines():
             raise SystemExit(0)
 
 raise SystemExit(1)
-'
+PY
 }
 
 extract_failure_reason() {
-    python3 -c '
+    python3 - <<'PY'
 import re
 import sys
 
 text = sys.stdin.read()
-text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
 patterns = [
-    r"^Traceback \(most recent call last\):.*",
-    r"^.*Error executing job with overrides:.*",
-    r"^.*FileNotFoundError:.*",
-    r"^.*ModuleNotFoundError:.*",
-    r"^.*RuntimeError:.*",
-    r"^.*OSError:.*",
-    r"^.*AssertionError:.*",
-    r"^.*UnboundLocalError:.*",
-    r"^.*ValueError:.*",
-    r"^.*KeyError:.*",
-    r"^.*IndexError:.*",
-    r"^.*TypeError:.*",
-    r"^.*No space left on device.*",
-    r"^.*command not found.*",
-    r"^.*Killed$",
+    r'^Traceback \(most recent call last\):.*',
+    r'^.*Error executing job with overrides:.*',
+    r'^.*FileNotFoundError:.*',
+    r'^.*ModuleNotFoundError:.*',
+    r'^.*RuntimeError:.*',
+    r'^.*OSError:.*',
+    r'^.*AssertionError:.*',
+    r'^.*UnboundLocalError:.*',
+    r'^.*ValueError:.*',
+    r'^.*KeyError:.*',
+    r'^.*IndexError:.*',
+    r'^.*TypeError:.*',
+    r'^.*No space left on device.*',
+    r'^.*command not found.*',
+    r'^.*Killed$',
 ]
 
 matches = []
@@ -728,7 +728,7 @@ if matches:
     raise SystemExit(0)
 
 raise SystemExit(1)
-'
+PY
 }
 
 write_structured_status() {
