@@ -11,6 +11,25 @@ print(shlex.join(sys.argv[1:]))
 PY
 }
 
+get_command_part_value() {
+    local key="$1"
+    shift
+    local part
+
+    for part in "$@"; do
+        if [[ "$part" == "$key="* ]]; then
+            printf '%s\n' "${part#"$key="}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+DATA_STORAGE_FORMAT="lmdb"
+DATA_LOAD_INTO_MEMORY="false"
+DATA_PATHS_OVERRIDE=""
+
 # Multi-card training command.
 TRAIN_COMMAND_PARTS=(
     torchrun
@@ -24,6 +43,8 @@ TRAIN_COMMAND_PARTS=(
     data.data_subset=100
     data.demo_outcome=success
     data.suffix=rgbd-skill
+    "data.storage_format=${DATA_STORAGE_FORMAT}"
+    "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     training.batch_size=512
     training.num_epochs=3000
     training.steps_per_epoch=100  # default: 100
@@ -32,14 +53,19 @@ TRAIN_COMMAND_PARTS=(
     wandb.mode=online
     randomness=low
     dryrun=false
-    data.load_into_memory=true
+    data.ddp_shard_enabled=true
 )
+if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
+fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
-SSH_NAME="240"
+WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
+WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
+SSH_NAME="232"
 NUM_GPUS="2"
-GPU_ID="3,4"
+GPU_ID="2,3"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
-# DATA_DIR_PROCESSED="/home/hy/robust-rearrangement-custom/data/"  # 236
+DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240)
 
@@ -564,7 +590,7 @@ start_remote_training() {
         -o BatchMode=yes \
         -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         "$host_alias" \
-        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" <<'REMOTE'
+        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" <<'REMOTE'
 set -euo pipefail
 
 session_name="$1"
@@ -572,68 +598,47 @@ project_dir="$2"
 conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
+wandb_project_name="${6:-project}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
-resolve_tmp_dir() {
-    local candidate
-    local user_name
-    local wandb_dir
-    local cache_dir
-    local test_dir
-
-    user_name="${USER:-$(id -un 2>/dev/null || echo user)}"
-
-    for candidate in "/tmp/${user_name}/auto_train_tmp" "$HOME/tmp"; do
-        [[ -z "$candidate" ]] && continue
-
-        if ! mkdir -p "$candidate" >/dev/null 2>&1; then
-            continue
-        fi
-
-        wandb_dir="$candidate/wandb"
-        cache_dir="$candidate/wandb-cache"
-        if ! mkdir -p "$wandb_dir" "$cache_dir" >/dev/null 2>&1; then
-            continue
-        fi
-
-        test_dir="$candidate/.auto_train_tmp_write_test_$$"
-        if mkdir "$test_dir" >/dev/null 2>&1; then
-            rmdir "$test_dir" >/dev/null 2>&1 || true
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-
-    echo "No writable temporary directory found. Checked: /tmp/${user_name}/auto_train_tmp, $HOME/tmp" >&2
-    return 1
+expand_path() {
+    local path="$1"
+    if [[ "$path" == "~" ]]; then
+        printf '%s\n' "$HOME"
+    elif [[ "$path" == "~/"* ]]; then
+        printf '%s\n' "$HOME/${path#"~/"}"
+    else
+        printf '%s\n' "$path"
+    fi
 }
 
-tmp_dir="$(resolve_tmp_dir)"
-wandb_dir="$tmp_dir/wandb"
-wandb_cache_dir="$tmp_dir/wandb-cache"
+project_dir="$(expand_path "$project_dir")"
+data_dir_processed="$(expand_path "$data_dir_processed")"
 
 command -v tmux >/dev/null 2>&1
 tmux has-session -t "$session_name" >/dev/null 2>&1 && exit 10
 tmux new-session -d -s "$session_name"
 tmux set-option -t "$session_name" remain-on-exit on
 tmux new-window -t "$session_name" -n train
-tmux send-keys -t "$session_name:train" -l "cd $project_dir"
+printf -v project_cd_command 'cd %q' "$project_dir"
+tmux send-keys -t "$session_name:train" -l "$project_cd_command"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || true"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-printf -v tmp_export 'export TMPDIR=%q TEMP=%q TMP=%q' "$tmp_dir" "$tmp_dir" "$tmp_dir"
-tmux send-keys -t "$session_name:train" -l "$tmp_export"
-tmux send-keys -t "$session_name:train" Enter
-printf -v wandb_export 'export WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_DATA_DIR=%q' "$wandb_dir" "$wandb_cache_dir" "$wandb_dir"
-tmux send-keys -t "$session_name:train" -l "$wandb_export"
-tmux send-keys -t "$session_name:train" Enter
-printf -v tmp_echo_command 'echo AUTO_TRAIN_TMPDIR=%q' "$tmp_dir"
-tmux send-keys -t "$session_name:train" -l "$tmp_echo_command"
-tmux send-keys -t "$session_name:train" Enter
-printf -v wandb_echo_command 'echo AUTO_TRAIN_WANDB_DIR=%q' "$wandb_dir"
-tmux send-keys -t "$session_name:train" -l "$wandb_echo_command"
+wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za-z0-9._-' '_')"
+if [[ -z "$wandb_project_slug" ]]; then
+    wandb_project_slug="project"
+fi
+runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+wandb_cache_dir="${runtime_tmp_dir}/cache"
+wandb_config_dir="${runtime_tmp_dir}/config"
+wandb_data_dir="${runtime_tmp_dir}/data"
+wandb_artifact_dir="${runtime_tmp_dir}/artifacts"
+mkdir -p "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+printf -v runtime_env_export 'export TMPDIR=%q TEMP=%q TMP=%q WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_CONFIG_DIR=%q WANDB_DATA_DIR=%q WANDB_ARTIFACT_DIR=%q' "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+tmux send-keys -t "$session_name:train" -l "$runtime_env_export"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter

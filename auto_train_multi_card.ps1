@@ -39,6 +39,26 @@ function ConvertTo-CommandString {
     }))
 }
 
+function Get-CommandPartValue {
+    param(
+        [string[]]$Parts,
+        [string]$Key
+    )
+
+    $prefix = "$Key="
+    foreach ($part in $Parts) {
+        if (($null -ne $part) -and $part.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+            return $part.Substring($prefix.Length)
+        }
+    }
+
+    return $null
+}
+
+$global:DATA_STORAGE_FORMAT = "lmdb"
+$global:DATA_LOAD_INTO_MEMORY = "false"
+$global:DATA_PATHS_OVERRIDE = ""
+
 # Multi-card training command.
 $global:TRAIN_COMMAND_PARTS = @(
     "torchrun",
@@ -46,29 +66,39 @@ $global:TRAIN_COMMAND_PARTS = @(
     "--nproc_per_node=2",
     "-m",
     "src.train.bc_ddp",
-    "+experiment=rgbd/diff_unet",
-    "task=[one_leg,round_table,lamp]",
+    "+experiment=rgbd/dit",  # diff_unet, dit, fmt
+    "task=round_table",
     "data.demo_source=rollout",
-    "data.data_subset=500",
+    "data.data_subset=100",
     "data.demo_outcome=success",
     "data.suffix=rgbd-skill",
+    "data.storage_format=$global:DATA_STORAGE_FORMAT",
+    "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
     "training.batch_size=512",
     "training.num_epochs=3000",
-    "training.steps_per_epoch=-1",
+    "training.steps_per_epoch=100",
     "training.save_per_epoch=500",
     "wandb.project=multi-task-rgbd-skill-low-500",
     "wandb.mode=online",
     "randomness=low",
     "dryrun=false",
-    "data.load_into_memory=true"
+    "data.ddp_shard_enabled=true"
 )
+if (-not [string]::IsNullOrWhiteSpace($global:DATA_PATHS_OVERRIDE)) {
+    $global:TRAIN_COMMAND_PARTS += "data.data_paths_override=$global:DATA_PATHS_OVERRIDE"
+}
 $global:TRAIN_COMMAND = ConvertTo-CommandString -Parts $global:TRAIN_COMMAND_PARTS
+$global:WANDB_PROJECT_NAME = Get-CommandPartValue -Parts $global:TRAIN_COMMAND_PARTS -Key "wandb.project"
+if ([string]::IsNullOrWhiteSpace($global:WANDB_PROJECT_NAME)) {
+    $global:WANDB_PROJECT_NAME = "project"
+}
 $global:SSH_NAME = "232"
 $global:NUM_GPUs = 2
-$global:GPU_ID = "1,3"
+$global:GPU_ID = ""
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
-$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"
+$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
+# $global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
     "birch",
@@ -83,6 +113,16 @@ $sessionNameCandidates = @(
     "river",
     "stone"
 )
+
+function ConvertTo-UnixLineEndings {
+    param([string]$Text)
+
+    if ($null -eq $Text) {
+        return $null
+    }
+
+    return ($Text -replace "`r`n", "`n") -replace "`r", "`n"
+}
 
 function ConvertTo-SshArgumentString {
     param([string[]]$Arguments)
@@ -658,7 +698,8 @@ function Start-RemoteTraining {
         [string]$HostAlias,
         [string]$SessionName,
         [string]$PreparedCommand,
-        [string]$DataDirProcessed
+        [string]$DataDirProcessed,
+        [string]$WandbProjectName
     )
 
     $remoteScript = @'
@@ -669,68 +710,47 @@ project_dir="$2"
 conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
+wandb_project_name="${6:-project}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
-resolve_tmp_dir() {
-    local candidate
-    local user_name
-    local wandb_dir
-    local cache_dir
-    local test_dir
-
-    user_name="${USER:-$(id -un 2>/dev/null || echo user)}"
-
-    for candidate in "/tmp/${user_name}/auto_train_tmp" "$HOME/tmp"; do
-        [[ -z "$candidate" ]] && continue
-
-        if ! mkdir -p "$candidate" >/dev/null 2>&1; then
-            continue
-        fi
-
-        wandb_dir="$candidate/wandb"
-        cache_dir="$candidate/wandb-cache"
-        if ! mkdir -p "$wandb_dir" "$cache_dir" >/dev/null 2>&1; then
-            continue
-        fi
-
-        test_dir="$candidate/.auto_train_tmp_write_test_$$"
-        if mkdir "$test_dir" >/dev/null 2>&1; then
-            rmdir "$test_dir" >/dev/null 2>&1 || true
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-
-    echo "No writable temporary directory found. Checked: /tmp/${user_name}/auto_train_tmp, $HOME/tmp" >&2
-    return 1
+expand_path() {
+    local path="$1"
+    if [[ "$path" == "~" ]]; then
+        printf '%s\n' "$HOME"
+    elif [[ "$path" == "~/"* ]]; then
+        printf '%s\n' "$HOME/${path#"~/"}"
+    else
+        printf '%s\n' "$path"
+    fi
 }
 
-tmp_dir="$(resolve_tmp_dir)"
-wandb_dir="$tmp_dir/wandb"
-wandb_cache_dir="$tmp_dir/wandb-cache"
+project_dir="$(expand_path "$project_dir")"
+data_dir_processed="$(expand_path "$data_dir_processed")"
 
 command -v tmux >/dev/null 2>&1
 tmux has-session -t "$session_name" >/dev/null 2>&1 && exit 10
 tmux new-session -d -s "$session_name"
 tmux set-option -t "$session_name" remain-on-exit on
 tmux new-window -t "$session_name" -n train
-tmux send-keys -t "$session_name:train" -l "cd $project_dir"
+printf -v project_cd_command 'cd %q' "$project_dir"
+tmux send-keys -t "$session_name:train" -l "$project_cd_command"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "source ~/.bashrc >/dev/null 2>&1 || true"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l 'eval "$(conda shell.bash hook 2>/dev/null)" || true'
 tmux send-keys -t "$session_name:train" Enter
-printf -v tmp_export 'export TMPDIR=%q TEMP=%q TMP=%q' "$tmp_dir" "$tmp_dir" "$tmp_dir"
-tmux send-keys -t "$session_name:train" -l "$tmp_export"
-tmux send-keys -t "$session_name:train" Enter
-printf -v wandb_export 'export WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_DATA_DIR=%q' "$wandb_dir" "$wandb_cache_dir" "$wandb_dir"
-tmux send-keys -t "$session_name:train" -l "$wandb_export"
-tmux send-keys -t "$session_name:train" Enter
-printf -v tmp_echo_command 'echo AUTO_TRAIN_TMPDIR=%q' "$tmp_dir"
-tmux send-keys -t "$session_name:train" -l "$tmp_echo_command"
-tmux send-keys -t "$session_name:train" Enter
-printf -v wandb_echo_command 'echo AUTO_TRAIN_WANDB_DIR=%q' "$wandb_dir"
-tmux send-keys -t "$session_name:train" -l "$wandb_echo_command"
+wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za-z0-9._-' '_')"
+if [[ -z "$wandb_project_slug" ]]; then
+    wandb_project_slug="project"
+fi
+runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+wandb_cache_dir="${runtime_tmp_dir}/cache"
+wandb_config_dir="${runtime_tmp_dir}/config"
+wandb_data_dir="${runtime_tmp_dir}/data"
+wandb_artifact_dir="${runtime_tmp_dir}/artifacts"
+mkdir -p "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+printf -v runtime_env_export 'export TMPDIR=%q TEMP=%q TMP=%q WANDB_DIR=%q WANDB_CACHE_DIR=%q WANDB_CONFIG_DIR=%q WANDB_DATA_DIR=%q WANDB_ARTIFACT_DIR=%q' "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$runtime_tmp_dir" "$wandb_cache_dir" "$wandb_config_dir" "$wandb_data_dir" "$wandb_artifact_dir"
+tmux send-keys -t "$session_name:train" -l "$runtime_env_export"
 tmux send-keys -t "$session_name:train" Enter
 tmux send-keys -t "$session_name:train" -l "conda activate $conda_env"
 tmux send-keys -t "$session_name:train" Enter
@@ -756,7 +776,8 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
         $RemoteProjectDir,
         $RemoteCondaEnv,
         ([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($PreparedCommand))),
-        $DataDirProcessed
+        $DataDirProcessed,
+        $WandbProjectName
     )
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -773,7 +794,7 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
 
     try {
         [void]$process.Start()
-        $process.StandardInput.Write($remoteScript)
+        $process.StandardInput.Write((ConvertTo-UnixLineEndings -Text $remoteScript))
         $process.StandardInput.Close()
 
         $stdout = $process.StandardOutput.ReadToEnd()
@@ -917,10 +938,13 @@ $gpuIdsCsv = $selection.GpuIds -join ','
 $preparedCommand = Prepare-TrainCommand -NumGpus $requestedGpuCount -GpuIdsCsv $gpuIdsCsv
 $commandName = Get-CommandName -Command $preparedCommand
 $sessionName = Get-AvailableTmuxSessionName -HostAlias $selection.HostAlias
-$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED
+$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED -WandbProjectName $WANDB_PROJECT_NAME
 
 if ($startResult.ExitCode -ne 0) {
     [Console]::Error.WriteLine("Failed to start tmux session '$sessionName' on $($selection.HostAlias).")
+    if (-not [string]::IsNullOrWhiteSpace($startResult.Output)) {
+        [Console]::Error.WriteLine($startResult.Output)
+    }
     exit 1
 }
 
