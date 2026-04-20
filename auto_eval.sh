@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # download
+    download
     eval
 )
 
@@ -15,10 +15,12 @@ LOCAL_PATH="~/projects/robust-rearrangement-custom"
 TASK="round_table"
 PROJECT="rgbd_skill"
 MODEL_ARCH="diff_unet"
-NUM_DATA="100"
+NUM_DATA="200"
 EPOCH=""
 N_ENVS=3
-N_ROLLOUTS=6
+N_ROLLOUTS=18
+VISUALIZE=false
+DEBUG=false
 CONDA_ENV="rr"
 CHECKPOINT_PATTERN="*last*.pt"  # 暂时使用 last
 CONNECT_TIMEOUT_SECONDS=10
@@ -369,6 +371,12 @@ eval_step() {
         --rollout-suffix-model-name "$rollout_suffix_model_name"
         --wt-path "$local_checkpoint"
     )
+    if [[ "$VISUALIZE" == "true" ]]; then
+        eval_cmd+=(--visualize)
+    fi
+    if [[ "$DEBUG" == "true" ]]; then
+        eval_cmd+=(--debug)
+    fi
 
     log_info "Running evaluation in ${local_root}"
     log_info "Evaluation command: $(quote_command "${eval_cmd[@]}")"
