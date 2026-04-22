@@ -4,21 +4,25 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # download
+    download
     eval
 )
 
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
 REMOTE_SSH_HOST="230"
-RUN_ID="e56mvprj"
+RUN_ID="exalted-meadow-11"
 LOCAL_PATH="~/projects/robust-rearrangement-custom"
-TASK="one_leg+round_table+lamp"
+TASK="round_table"
 PROJECT="rgbd_skill"
-EPOCH="4000"
+MODEL_ARCH="diff_unet"
+NUM_DATA="200"
+EPOCH=""
 N_ENVS=3
-N_ROLLOUTS=15
+N_ROLLOUTS=18
+VISUALIZE=false
+DEBUG=false
 CONDA_ENV="rr"
-CHECKPOINT_PATTERN="*best_test_loss*.pt"
+CHECKPOINT_PATTERN="*last*.pt"  # 暂时使用 last
 CONNECT_TIMEOUT_SECONDS=10
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
@@ -64,6 +68,21 @@ expand_path() {
 require_command() {
     local cmd="$1"
     command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
+}
+
+checkpoint_pattern_to_name_tag() {
+    local pattern="$1"
+    local tag
+
+    tag="$(basename -- "$pattern")"
+    tag="${tag%.pt}"
+    tag="${tag//\*/}"
+    tag="${tag//\?/}"
+    tag="${tag//\[/}"
+    tag="${tag//\]/}"
+
+    [[ -n "${tag// }" ]] || die "Unable to derive checkpoint name tag from CHECKPOINT_PATTERN: ${pattern}"
+    printf '%s\n' "$tag"
 }
 
 quote_command() {
@@ -352,6 +371,12 @@ eval_step() {
         --rollout-suffix-model-name "$rollout_suffix_model_name"
         --wt-path "$local_checkpoint"
     )
+    if [[ "$VISUALIZE" == "true" ]]; then
+        eval_cmd+=(--visualize)
+    fi
+    if [[ "$DEBUG" == "true" ]]; then
+        eval_cmd+=(--debug)
+    fi
 
     log_info "Running evaluation in ${local_root}"
     log_info "Evaluation command: $(quote_command "${eval_cmd[@]}")"
@@ -395,6 +420,7 @@ parse_args() {
 
 main() {
     local local_root destination_dir local_checkpoint
+    local checkpoint_name_tag
     local rollout_suffix_model_name
     local step
 
@@ -403,8 +429,9 @@ main() {
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
 
+    checkpoint_name_tag="$(checkpoint_pattern_to_name_tag "$CHECKPOINT_PATTERN")"
     destination_dir="${local_root}/checkpoints/bc/${TASK}/low"
-    local_checkpoint="${destination_dir}/${PROJECT}_best_test_loss_${EPOCH}.pt"
+    local_checkpoint="${destination_dir}/${PROJECT}_${MODEL_ARCH}_${NUM_DATA}traj_${checkpoint_name_tag}_${EPOCH}.pt"
 
     rollout_suffix_model_name="$ROLLOUT_SUFFIX_MODEL_NAME"
     if [[ -z "$rollout_suffix_model_name" ]]; then

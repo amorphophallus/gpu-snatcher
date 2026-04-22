@@ -195,7 +195,7 @@ function Get-ZjuHostsFromSshConfig {
         }
     }
 
-    return @($result)
+    return @($result | Sort-Object -Unique)
 }
 
 function Resolve-HostAlias {
@@ -231,6 +231,7 @@ function Invoke-SshCommand {
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
         '-o', 'ServerAliveInterval=5',
         '-o', 'ServerAliveCountMax=1',
         $HostAlias,
@@ -769,6 +770,7 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
     $sshArgs = @(
         '-o', 'BatchMode=yes',
         '-o', "ConnectTimeout=$ConnectTimeoutSeconds",
+        '-o', 'StrictHostKeyChecking=accept-new',
         $HostAlias,
         'bash', '-s', '--',
         $SessionName,

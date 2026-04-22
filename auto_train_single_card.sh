@@ -140,12 +140,26 @@ get_host_gpu_status() {
     local host_alias="$1"
     local query_output
     local ssh_status
+    local restore_errexit=0
+
+    # Match check_zju_4090.sh semantics under `set -e`: failed SSH probes should
+    # report a DOWN row with the error message instead of exiting early.
+    case $- in
+        *e*)
+            restore_errexit=1
+            set +e
+            ;;
+    esac
 
     query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         -o StrictHostKeyChecking=accept-new \
         "$host_alias" \
         "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
     ssh_status=$?
+
+    if (( restore_errexit )); then
+        set -e
+    fi
 
     if [[ $ssh_status -ne 0 ]]; then
         printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$query_output"

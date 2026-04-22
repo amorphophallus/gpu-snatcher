@@ -157,12 +157,27 @@ get_host_gpu_status() {
     local host_alias="$1"
     local query_output
     local ssh_status
+    local restore_errexit=0
+
+    # Keep host probing behavior aligned with check_zju_4090.sh even though this
+    # script runs with `set -e`: we need the SSH stderr/output for DOWN hosts
+    # instead of silently aborting the probe in the left side of a pipeline.
+    case $- in
+        *e*)
+            restore_errexit=1
+            set +e
+            ;;
+    esac
 
     query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
         -o StrictHostKeyChecking=accept-new \
         "$host_alias" \
         "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
     ssh_status=$?
+
+    if (( restore_errexit )); then
+        set -e
+    fi
 
     if [[ $ssh_status -ne 0 ]]; then
         printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$query_output"

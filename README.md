@@ -22,6 +22,9 @@ Simple helper scripts for checking ZJU 4090 servers, starting single-card or mul
 - `auto_data_preparation.sh`
   Linux-only helper for running rollout collection, batch processing pickles for multiple tasks into one merged LMDB, and uploading that single merged dataset directory to the matching path under `REMOTE_PATH` via `rsync` with progress display and resumable partial transfers.
 
+- `auto_data_preparation_zarr.sh`
+  Linux-only helper for running rollout collection, processing pickles task-by-task into Zarr datasets, and uploading each task dataset directory under `UPLOAD_RELATIVE_DIR` to the matching path under `REMOTE_PATH` via `rsync` with progress display and resumable partial transfers.
+
 ## Usage
 
 PowerShell:
@@ -42,6 +45,7 @@ Bash:
 ./cleanup_auto_train_sessions.sh
 ./auto_eval.sh
 ./auto_data_preparation.sh
+./auto_data_preparation_zarr.sh
 ```
 
 Before running `auto_train_single_card`, edit the globals at the top of the script such as `TRAIN_COMMAND`, `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, `DATA_PATHS_OVERRIDE` (optional explicit dataset path override), `SSH_NAME` (optional), `GPU_ID` (optional single GPU id), and `DATA_DIR_PROCESSED` when needed. The default PowerShell and Bash configurations use LMDB with lazy loading.
@@ -51,6 +55,8 @@ Before running `auto_train_multi_card`, edit the globals at the top of the scrip
 Before running `auto_eval.sh`, edit the globals at the top of the script such as `REMOTE_PATH`, `REMOTE_SSH_HOST` (optional, accepts `228` and expands it to `zju_4090_228`), `RUN_ID`, `LOCAL_PATH`, `TASK`, `PROJECT`, `EPOCH`, `N_ENVS`, `N_ROLLOUTS`, and `PARAMS`.
 
 Before running `auto_data_preparation.sh`, edit the globals at the top of the script such as `STEPS`, `TASKS`, `TASK_CKPT`, `TASK_EPISODE_LIMIT`, `LOCAL_PATH`, `REMOTE_PATH`, `REMOTE_SSH_HOST`, `UPLOAD_RELATIVE_DIR`, `PROCESS_SUFFIX`, and `PROCESS_OUTPUT_SUFFIX`. You can comment out lines in `STEPS` to skip `collect_data`, `process_pickles`, or `upload`, and comment out lines in `TASKS` to limit which tasks run. The script now processes all enabled tasks in one `process_pickles_to_lmdb` call and uploads the merged LMDB directory resolved from the sorted task group path under `UPLOAD_RELATIVE_DIR`. `REMOTE_PATH` is the root path, `UPLOAD_RELATIVE_DIR` controls the upload base directory, and `REMOTE_SSH_HOST` is required for the upload step.
+
+Before running `auto_data_preparation_zarr.sh`, edit the globals at the top of the script such as `STEPS`, `TASKS`, `TASK_CKPT`, `LOCAL_PATH`, `REMOTE_PATH`, `REMOTE_SSH_HOST`, `UPLOAD_RELATIVE_DIR`, `PROCESS_SUFFIX`, and `PROCESS_OUTPUT_SUFFIX`. You can comment out lines in `STEPS` to skip `collect_data`, `process_pickles`, or `upload`, and comment out lines in `TASKS` to limit which tasks run. This script keeps the pre-LMDB flow: it processes each enabled task with `process_pickles` into its own Zarr dataset under `UPLOAD_RELATIVE_DIR/{task}` and uploads each task directory separately. `REMOTE_PATH` is the root path, `UPLOAD_RELATIVE_DIR` controls the upload base directory, and `REMOTE_SSH_HOST` is required for the upload step unless direct NAS sync is available.
 
 ## Example
 
