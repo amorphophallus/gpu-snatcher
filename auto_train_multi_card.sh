@@ -38,6 +38,7 @@ TRAIN_COMMAND_PARTS=(
     -m
     src.train.bc_ddp
     +experiment=rgbd/diff_unet
+    vision_encoder.pretrained=false
     "task=[one_leg,round_table,lamp]"
     data.demo_source=rollout
     data.data_subset=500

@@ -67,6 +67,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "-m",
     "src.train.bc_ddp",
     "+experiment=rgbd/dit",  # diff_unet, dit, fmt
+    "vision_encoder.pretrained=false",
     "task=round_table",
     "data.demo_source=rollout",
     "data.data_subset=100",

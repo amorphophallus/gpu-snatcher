@@ -38,6 +38,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "-m",
     "src.train.bc",
     "+experiment=rgbd/diff_unet",
+    "vision_encoder.pretrained=false",
     "task=[one_leg,round_table,lamp]",
     "data.demo_source=rollout",
     "data.demo_outcome=success",
