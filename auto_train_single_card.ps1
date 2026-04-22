@@ -45,6 +45,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "data.suffix=rgbd-skill",
     "data.storage_format=$global:DATA_STORAGE_FORMAT",
     "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
+    "dataloader.num_workers=4",
     "data.data_subset=50",
     "training.batch_size=256",
     "training.num_epochs=4000",

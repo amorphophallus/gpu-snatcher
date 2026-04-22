@@ -46,6 +46,7 @@ TRAIN_COMMAND_PARTS=(
     data.suffix=rgbd-skill
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
+    dataloader.num_workers=4
     training.batch_size=512
     training.num_epochs=3000
     training.steps_per_epoch=-1
