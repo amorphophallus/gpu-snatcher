@@ -4,7 +4,7 @@ param(
     [int]$ConnectTimeoutSeconds = 5,
     [int]$PollIntervalSeconds = 5,
     [int]$PollTimeoutSeconds = 300,
-    [int]$SshCommandTimeoutSeconds = 15,
+    [int]$SshCommandTimeoutSeconds = 30,
     [string]$RemoteProjectDir = "/mnt/nas/share/home/hy/robust-rearrangement-custom",
     [string]$RemoteCondaEnv = "rr",
     [switch]$Force,
@@ -66,8 +66,8 @@ $global:TRAIN_COMMAND_PARTS = @(
     "--nproc_per_node=2",
     "-m",
     "src.train.bc_ddp",
-    "+experiment=rgbd/dit",  # diff_unet, dit, fmt
-    "vision_encoder.pretrained=false",
+    "+experiment=rgbd/fmt",  # diff_unet, dit, fmt
+    "vision_encoder.pretrained=true",
     "task=round_table",
     "data.demo_source=rollout",
     "data.data_subset=100",
@@ -75,7 +75,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "data.suffix=rgbd-skill",
     "data.storage_format=$global:DATA_STORAGE_FORMAT",
     "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
-    "dataloader.num_workers=4",
+    "data.dataloader_workers=4",
     "training.batch_size=512",
     "training.num_epochs=3000",
     "training.steps_per_epoch=100",
@@ -84,7 +84,8 @@ $global:TRAIN_COMMAND_PARTS = @(
     "wandb.mode=online",
     "randomness=low",
     "dryrun=false",
-    "data.ddp_shard_enabled=true"
+    "data.ddp_shard_enabled=true",
+    "wandb.continue_run_id=9mwpmals"
 )
 if (-not [string]::IsNullOrWhiteSpace($global:DATA_PATHS_OVERRIDE)) {
     $global:TRAIN_COMMAND_PARTS += "data.data_paths_override=$global:DATA_PATHS_OVERRIDE"
@@ -94,13 +95,13 @@ $global:WANDB_PROJECT_NAME = Get-CommandPartValue -Parts $global:TRAIN_COMMAND_P
 if ([string]::IsNullOrWhiteSpace($global:WANDB_PROJECT_NAME)) {
     $global:WANDB_PROJECT_NAME = "project"
 }
-$global:SSH_NAME = "232"
+$global:SSH_NAME = "236"
 $global:NUM_GPUs = 2
 $global:GPU_ID = ""
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
-$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
-# $global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
+# $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
+$global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
     "birch",
