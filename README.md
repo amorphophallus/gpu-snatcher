@@ -17,7 +17,7 @@ Simple helper scripts for checking ZJU 4090 servers, starting single-card or mul
   Remove the tmux sessions used by the auto-train scripts from all configured servers.
 
 - `auto_eval.sh`
-  Linux-only helper for locating matching `outputs/{date}/{time}` runs for a `RUN_ID`, selecting checkpoints based on `EPOCH` (`_{EPOCH}` suffix required when set, original latest-output selection when empty), downloading the selected checkpoint into `LOCAL_PATH/checkpoints/bc/{TASK}/low/`, and launching `src.eval.evaluate_model` locally.
+  Linux-only helper for locating matching `outputs/{date}/{time}` runs for a `RUN_ID`, scanning them from newest to oldest for a checkpoint matching `CHECKPOINT_PATTERN`, requiring a `_{EPOCH}` suffix when `EPOCH` is set and rejecting epoch-suffixed filenames when `EPOCH` is empty, downloading the selected checkpoint into `LOCAL_PATH/checkpoints/bc/{TASK}/low/`, and launching `src.eval.evaluate_model` locally.
 
 - `auto_data_preparation.sh`
   Linux-only helper for running rollout collection, batch processing pickles for multiple tasks into one merged LMDB, and uploading that single merged dataset directory to the matching path under `REMOTE_PATH` via `rsync` with progress display and resumable partial transfers.
