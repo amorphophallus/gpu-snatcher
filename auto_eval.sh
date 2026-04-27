@@ -111,12 +111,13 @@ discover_checkpoint() {
     local outputs_root="$1"
     local run_id="$2"
     local checkpoint_pattern="$3"
-    local ssh_host="${4:-}"
+    local epoch="${4:-}"
+    local ssh_host="${5:-}"
     local result
 
     if [[ -n "$ssh_host" ]]; then
         local remote_cmd
-        printf -v remote_cmd 'python3 - %q %q %q' "$outputs_root" "$run_id" "$checkpoint_pattern"
+        printf -v remote_cmd 'python3 - %q %q %q %q' "$outputs_root" "$run_id" "$checkpoint_pattern" "$epoch"
         result="$(
             ssh \
                 -o BatchMode=yes \
@@ -132,6 +133,7 @@ from pathlib import Path
 outputs_root = Path(sys.argv[1])
 run_id = sys.argv[2]
 checkpoint_pattern = sys.argv[3]
+epoch = sys.argv[4].strip()
 
 
 def parse_output_timestamp(date_text: str, time_text: str) -> datetime:
@@ -146,7 +148,7 @@ def parse_output_timestamp(date_text: str, time_text: str) -> datetime:
 if not outputs_root.is_dir():
     raise SystemExit(f"Outputs directory not found: {outputs_root}")
 
-candidates = []
+output_dir_map = {}
 for root, dirs, _files in os.walk(outputs_root):
     for dirname in dirs:
         full_path = Path(root) / dirname
@@ -166,38 +168,78 @@ for root, dirs, _files in os.walk(outputs_root):
         except ValueError:
             continue
         output_dir = Path(*parts[: outputs_index + 3])
-        candidates.append((timestamp, str(output_dir)))
+        output_dir_map[str(output_dir)] = timestamp
 
-if not candidates:
+if not output_dir_map:
     raise SystemExit(f"No run directories containing RUN_ID '{run_id}' found under {outputs_root}")
 
-_timestamp, output_dir_text = max(candidates, key=lambda item: (item[0], item[1]))
-output_dir = Path(output_dir_text)
-models_dir = output_dir / "models"
-if not models_dir.is_dir():
-    raise SystemExit(f"Models directory not found under latest output: {models_dir}")
+output_dir_candidates = sorted(
+    ((timestamp, output_dir_text) for output_dir_text, timestamp in output_dir_map.items()),
+    key=lambda item: (item[0], item[1]),
+)
 
-checkpoint_candidates = []
-for checkpoint in models_dir.rglob("*.pt"):
-    if not checkpoint.is_file():
-        continue
-    if not fnmatch.fnmatch(checkpoint.name, checkpoint_pattern):
-        continue
-    checkpoint_candidates.append((checkpoint.stat().st_mtime, str(checkpoint)))
 
-if not checkpoint_candidates:
-    raise SystemExit(
-        f"No checkpoints matching pattern '{checkpoint_pattern}' found under {models_dir}"
-    )
+def has_epoch_suffix(checkpoint: Path, epoch_text: str) -> bool:
+    return checkpoint.stem.endswith(f"_{epoch_text}")
 
-_mtime, checkpoint_text = max(checkpoint_candidates, key=lambda item: (item[0], item[1]))
-print(output_dir_text)
-print(checkpoint_text)
+
+def find_checkpoint_in_output(output_dir: Path):
+    models_dir = output_dir / "models"
+    if not models_dir.is_dir():
+        return None
+
+    checkpoint_candidates = []
+    for checkpoint in models_dir.rglob("*.pt"):
+        if not checkpoint.is_file():
+            continue
+        if not fnmatch.fnmatch(checkpoint.name, checkpoint_pattern):
+            continue
+        if epoch:
+            if not has_epoch_suffix(checkpoint, epoch):
+                continue
+        checkpoint_candidates.append((checkpoint.stat().st_mtime, str(checkpoint)))
+
+    if not checkpoint_candidates:
+        return None
+
+    _mtime, checkpoint_text = max(checkpoint_candidates, key=lambda item: (item[0], item[1]))
+    return checkpoint_text
+
+
+selected_output_dir_text = None
+selected_checkpoint_text = None
+
+if epoch:
+    for _timestamp, output_dir_text in reversed(output_dir_candidates):
+        checkpoint_text = find_checkpoint_in_output(Path(output_dir_text))
+        if checkpoint_text is None:
+            continue
+        selected_output_dir_text = output_dir_text
+        selected_checkpoint_text = checkpoint_text
+        break
+
+    if selected_checkpoint_text is None:
+        raise SystemExit(
+            f"No checkpoints matching pattern '{checkpoint_pattern}' with required suffix "
+            f"'_{epoch}' found under outputs for RUN_ID '{run_id}'"
+        )
+else:
+    _timestamp, output_dir_text = output_dir_candidates[-1]
+    selected_output_dir_text = output_dir_text
+    selected_checkpoint_text = find_checkpoint_in_output(Path(output_dir_text))
+    if selected_checkpoint_text is None:
+        raise SystemExit(
+            f"No checkpoints matching pattern '{checkpoint_pattern}' found under latest output: "
+            f"{Path(output_dir_text) / 'models'}"
+        )
+
+print(selected_output_dir_text)
+print(selected_checkpoint_text)
 PY
         )"
     else
         result="$(
-            python3 - "$outputs_root" "$run_id" "$checkpoint_pattern" <<'PY'
+            python3 - "$outputs_root" "$run_id" "$checkpoint_pattern" "$epoch" <<'PY'
 import fnmatch
 import os
 import sys
@@ -207,6 +249,7 @@ from pathlib import Path
 outputs_root = Path(sys.argv[1])
 run_id = sys.argv[2]
 checkpoint_pattern = sys.argv[3]
+epoch = sys.argv[4].strip()
 
 
 def parse_output_timestamp(date_text: str, time_text: str) -> datetime:
@@ -221,7 +264,7 @@ def parse_output_timestamp(date_text: str, time_text: str) -> datetime:
 if not outputs_root.is_dir():
     raise SystemExit(f"Outputs directory not found: {outputs_root}")
 
-candidates = []
+output_dir_map = {}
 for root, dirs, _files in os.walk(outputs_root):
     for dirname in dirs:
         full_path = Path(root) / dirname
@@ -241,33 +284,73 @@ for root, dirs, _files in os.walk(outputs_root):
         except ValueError:
             continue
         output_dir = Path(*parts[: outputs_index + 3])
-        candidates.append((timestamp, str(output_dir)))
+        output_dir_map[str(output_dir)] = timestamp
 
-if not candidates:
+if not output_dir_map:
     raise SystemExit(f"No run directories containing RUN_ID '{run_id}' found under {outputs_root}")
 
-_timestamp, output_dir_text = max(candidates, key=lambda item: (item[0], item[1]))
-output_dir = Path(output_dir_text)
-models_dir = output_dir / "models"
-if not models_dir.is_dir():
-    raise SystemExit(f"Models directory not found under latest output: {models_dir}")
+output_dir_candidates = sorted(
+    ((timestamp, output_dir_text) for output_dir_text, timestamp in output_dir_map.items()),
+    key=lambda item: (item[0], item[1]),
+)
 
-checkpoint_candidates = []
-for checkpoint in models_dir.rglob("*.pt"):
-    if not checkpoint.is_file():
-        continue
-    if not fnmatch.fnmatch(checkpoint.name, checkpoint_pattern):
-        continue
-    checkpoint_candidates.append((checkpoint.stat().st_mtime, str(checkpoint)))
 
-if not checkpoint_candidates:
-    raise SystemExit(
-        f"No checkpoints matching pattern '{checkpoint_pattern}' found under {models_dir}"
-    )
+def has_epoch_suffix(checkpoint: Path, epoch_text: str) -> bool:
+    return checkpoint.stem.endswith(f"_{epoch_text}")
 
-_mtime, checkpoint_text = max(checkpoint_candidates, key=lambda item: (item[0], item[1]))
-print(output_dir_text)
-print(checkpoint_text)
+
+def find_checkpoint_in_output(output_dir: Path):
+    models_dir = output_dir / "models"
+    if not models_dir.is_dir():
+        return None
+
+    checkpoint_candidates = []
+    for checkpoint in models_dir.rglob("*.pt"):
+        if not checkpoint.is_file():
+            continue
+        if not fnmatch.fnmatch(checkpoint.name, checkpoint_pattern):
+            continue
+        if epoch:
+            if not has_epoch_suffix(checkpoint, epoch):
+                continue
+        checkpoint_candidates.append((checkpoint.stat().st_mtime, str(checkpoint)))
+
+    if not checkpoint_candidates:
+        return None
+
+    _mtime, checkpoint_text = max(checkpoint_candidates, key=lambda item: (item[0], item[1]))
+    return checkpoint_text
+
+
+selected_output_dir_text = None
+selected_checkpoint_text = None
+
+if epoch:
+    for _timestamp, output_dir_text in reversed(output_dir_candidates):
+        checkpoint_text = find_checkpoint_in_output(Path(output_dir_text))
+        if checkpoint_text is None:
+            continue
+        selected_output_dir_text = output_dir_text
+        selected_checkpoint_text = checkpoint_text
+        break
+
+    if selected_checkpoint_text is None:
+        raise SystemExit(
+            f"No checkpoints matching pattern '{checkpoint_pattern}' with required suffix "
+            f"'_{epoch}' found under outputs for RUN_ID '{run_id}'"
+        )
+else:
+    _timestamp, output_dir_text = output_dir_candidates[-1]
+    selected_output_dir_text = output_dir_text
+    selected_checkpoint_text = find_checkpoint_in_output(Path(output_dir_text))
+    if selected_checkpoint_text is None:
+        raise SystemExit(
+            f"No checkpoints matching pattern '{checkpoint_pattern}' found under latest output: "
+            f"{Path(output_dir_text) / 'models'}"
+        )
+
+print(selected_output_dir_text)
+print(selected_checkpoint_text)
 PY
         )"
     fi
@@ -334,8 +417,12 @@ download_checkpoint_step() {
         [[ -d "$outputs_root" ]] || die "REMOTE_PATH is not available locally and REMOTE_SSH_HOST is empty: ${outputs_root}"
     fi
 
-    log_info "Searching latest output directory under ${outputs_root}"
-    discovery_result="$(discover_checkpoint "$outputs_root" "$RUN_ID" "$CHECKPOINT_PATTERN" "$remote_ssh_host")"
+    if [[ -n "${EPOCH// }" ]]; then
+        log_info "Searching matching output directories under ${outputs_root} for checkpoint suffix _${EPOCH}"
+    else
+        log_info "Searching latest output directory under ${outputs_root}"
+    fi
+    discovery_result="$(discover_checkpoint "$outputs_root" "$RUN_ID" "$CHECKPOINT_PATTERN" "$EPOCH" "$remote_ssh_host")"
     mapfile -t discovery_lines < <(printf '%s\n' "$discovery_result")
     [[ ${#discovery_lines[@]} -ge 2 ]] || die "Failed to parse checkpoint discovery result."
     output_dir="${discovery_lines[0]}"
