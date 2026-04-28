@@ -29,8 +29,8 @@ get_command_part_value() {
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
-DATA_ANNOTATE_GUIDANCE_POINT="true"
-DATA_ANNOTATE_SKILL_ONE_HOT="false"
+DATA_ANNOTATE_GUIDANCE_POINT="true"  # 是否在 rgb 图像上标注引导点
+DATA_ANNOTATE_SKILL_ONE_HOT="false"  # 是否给模型输入 one-hot skill 向量
 DATA_SUFFIX="$([[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" || "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
 
 # Multi-card training command.
@@ -40,11 +40,11 @@ TRAIN_COMMAND_PARTS=(
     --nproc_per_node=2
     -m
     src.train.bc_ddp
-    +experiment=rgbd/diff_unet
+    +experiment=rgbd/dit  # diff_unet, dit, fmt
     vision_encoder.pretrained=false
-    "task=[one_leg,round_table,lamp]"
+    "task=round_table"  # [one_leg, round_table, lamp]
     data.demo_source=rollout
-    data.data_subset=500
+    data.data_subset=200
     data.demo_outcome=success
     "data.suffix=${DATA_SUFFIX}"
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
@@ -54,9 +54,9 @@ TRAIN_COMMAND_PARTS=(
     data.dataloader_workers=4
     training.batch_size=512
     training.num_epochs=3000
-    training.steps_per_epoch=-1
+    training.steps_per_epoch=100
     training.save_per_epoch=500
-    wandb.project=multi-task-rgbd-skill-low-500
+    wandb.project=multi-task-rgbd-skill-low-0428
     wandb.mode=online
     randomness=low
     dryrun=false
@@ -70,9 +70,9 @@ WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PART
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
 SSH_NAME="232"
 NUM_GPUS="2"
-GPU_ID="2,3"
+GPU_ID=""
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
-DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236
+# DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240)
 
@@ -85,6 +85,13 @@ SSH_COMMAND_TIMEOUT_SECONDS="${SSH_COMMAND_TIMEOUT_SECONDS:-15}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/mnt/nas/share/home/hy/robust-rearrangement-custom}"
 REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-rr}"
 FORCE=0
+SSH_COMMON_ARGS=(
+    -o BatchMode=yes
+    -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS"
+    -o StrictHostKeyChecking=accept-new
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+)
 
 SESSION_NAME_CANDIDATES=(
     atlas
@@ -135,39 +142,26 @@ normalize_ssh_host() {
     fi
 }
 
-invoke_ssh() {
-    local host_alias="$1"
-    local remote_command="$2"
-
+run_ssh() {
     if command -v timeout >/dev/null 2>&1; then
         timeout "${SSH_COMMAND_TIMEOUT_SECONDS}s" \
             ssh \
-            -o BatchMode=yes \
-            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=1 \
-            "$host_alias" \
-            "$remote_command"
+            "${SSH_COMMON_ARGS[@]}" \
+            "$@"
     else
         ssh \
-            -o BatchMode=yes \
-            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=1 \
-            "$host_alias" \
-            "$remote_command"
+            "${SSH_COMMON_ARGS[@]}" \
+            "$@"
     fi
 }
 
-get_host_gpu_status() {
-    local host_alias="$1"
-    local query_output
+capture_ssh_output() {
+    local output_var="$1"
+    shift
+    local output
     local ssh_status
     local restore_errexit=0
 
-    # Keep host probing behavior aligned with check_zju_4090.sh even though this
-    # script runs with `set -e`: we need the SSH stderr/output for DOWN hosts
-    # instead of silently aborting the probe in the left side of a pipeline.
     case $- in
         *e*)
             restore_errexit=1
@@ -175,18 +169,61 @@ get_host_gpu_status() {
             ;;
     esac
 
-    query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        -o StrictHostKeyChecking=accept-new \
-        "$host_alias" \
-        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
+    output="$(run_ssh "$@" 2>&1)"
     ssh_status=$?
 
     if (( restore_errexit )); then
         set -e
     fi
 
-    if [[ $ssh_status -ne 0 ]]; then
-        printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$query_output"
+    printf -v "$output_var" '%s' "$output"
+    return "$ssh_status"
+}
+
+encode_transport_field() {
+    printf '%s' "$1" | base64 | tr -d '\r\n'
+}
+
+decode_transport_field() {
+    python3 - "$1" <<'PY'
+import base64
+import sys
+
+text = sys.argv[1]
+if not text.strip():
+    print("", end="")
+    raise SystemExit(0)
+
+try:
+    decoded = base64.b64decode(text).decode("utf-8", "replace")
+except Exception:
+    decoded = text
+
+print(decoded, end="")
+PY
+}
+
+invoke_ssh() {
+    local host_alias="$1"
+    local remote_command="$2"
+
+    run_ssh "$host_alias" "$remote_command"
+}
+
+get_host_gpu_status() {
+    local host_alias="$1"
+    local query_output
+
+    if capture_ssh_output query_output \
+        "$host_alias" \
+        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits"; then
+        :
+    else
+        local ssh_status="$?"
+        if [[ -z "$query_output" ]]; then
+            query_output="SSH command failed with exit code ${ssh_status}."
+        fi
+        printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$(encode_transport_field "$query_output")"
         return 0
     fi
 
@@ -254,7 +291,7 @@ list_hosts_by_priority() {
     fast_csv="$(IFS=,; echo "${FAST_SERVER[*]}")"
     slow_csv="$(IFS=,; echo "${SLOW_SERVER[*]}")"
 
-    get_hosts_from_ssh_config | python3 - "$fast_csv" "$slow_csv" <<'PY'
+    get_hosts_from_ssh_config | python3 /dev/fd/3 "$fast_csv" "$slow_csv" 3<<'PY'
 import re
 import sys
 
@@ -300,7 +337,7 @@ select_gpus_on_host() {
     local preferred_gpu_csv="${3:-}"
     local force="${4:-0}"
 
-    python3 - "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force" <<'PY'
+    python3 /dev/fd/3 "$host_alias" "$num_gpus" "$preferred_gpu_csv" "$force" 3<<'PY'
 import sys
 
 host_alias = sys.argv[1]
@@ -430,7 +467,13 @@ find_multi_gpu_target_or_error() {
                 return 0
                 ;;
             DOWN)
-                echo "Preferred host '$host_alias' is unreachable: $field2" >&2
+                local decoded_note
+                decoded_note="$(decode_transport_field "$field2")"
+                if [[ -n "$decoded_note" ]]; then
+                    printf "Preferred host '%s' is unreachable: %s\n" "$host_alias" "$decoded_note" >&2
+                else
+                    printf "Preferred host '%s' is unreachable.\n" "$host_alias" >&2
+                fi
                 return 1
                 ;;
             INSUFFICIENT)
@@ -593,9 +636,7 @@ start_remote_training() {
 
     encoded_command="$(printf '%s' "$prepared_command" | base64 -w 0)"
 
-    ssh \
-        -o BatchMode=yes \
-        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+    run_ssh \
         "$host_alias" \
         bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" <<'REMOTE'
 set -euo pipefail
@@ -671,7 +712,7 @@ capture_tmux_output() {
 }
 
 extract_wandb_run_name() {
-    python3 - <<'PY'
+    python3 /dev/fd/3 3<<'PY'
 import re
 import sys
 
@@ -695,7 +736,7 @@ PY
 }
 
 extract_failure_reason() {
-    python3 - <<'PY'
+    python3 /dev/fd/3 3<<'PY'
 import re
 import sys
 

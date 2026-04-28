@@ -83,6 +83,13 @@ POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-300}"
 SSH_COMMAND_TIMEOUT_SECONDS="${SSH_COMMAND_TIMEOUT_SECONDS:-15}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/mnt/nas/share/home/hy/robust-rearrangement-custom}"
 REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-rr}"
+SSH_COMMON_ARGS=(
+    -o BatchMode=yes
+    -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS"
+    -o StrictHostKeyChecking=accept-new
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+)
 
 SESSION_NAME_CANDIDATES=(
     atlas
@@ -118,38 +125,41 @@ get_hosts_from_ssh_config() {
     ' "$SSH_CONFIG_PATH" | awk '!seen[$0]++'
 }
 
-invoke_ssh() {
-    local host_alias="$1"
-    local remote_command="$2"
+normalize_ssh_host() {
+    local host="${1:-}"
+    host="${host//[[:space:]]/}"
 
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "${SSH_COMMAND_TIMEOUT_SECONDS}s" \
-            ssh \
-            -o BatchMode=yes \
-            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=1 \
-            "$host_alias" \
-            "$remote_command"
+    if [[ -z "$host" ]]; then
+        printf '%s\n' ""
+    elif [[ "$host" =~ ^zju_4090_ ]]; then
+        printf '%s\n' "$host"
+    elif [[ "$host" =~ ^[0-9]+$ ]]; then
+        printf 'zju_4090_%s\n' "$host"
     else
-        ssh \
-            -o BatchMode=yes \
-            -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=1 \
-            "$host_alias" \
-            "$remote_command"
+        printf '%s\n' "$host"
     fi
 }
 
-get_host_gpu_status() {
-    local host_alias="$1"
-    local query_output
+run_ssh() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${SSH_COMMAND_TIMEOUT_SECONDS}s" \
+            ssh \
+            "${SSH_COMMON_ARGS[@]}" \
+            "$@"
+    else
+        ssh \
+            "${SSH_COMMON_ARGS[@]}" \
+            "$@"
+    fi
+}
+
+capture_ssh_output() {
+    local output_var="$1"
+    shift
+    local output
     local ssh_status
     local restore_errexit=0
 
-    # Match check_zju_4090.sh semantics under `set -e`: failed SSH probes should
-    # report a DOWN row with the error message instead of exiting early.
     case $- in
         *e*)
             restore_errexit=1
@@ -157,18 +167,61 @@ get_host_gpu_status() {
             ;;
     esac
 
-    query_output="$(ssh -o BatchMode=yes -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
-        -o StrictHostKeyChecking=accept-new \
-        "$host_alias" \
-        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits" 2>&1)"
+    output="$(run_ssh "$@" 2>&1)"
     ssh_status=$?
 
     if (( restore_errexit )); then
         set -e
     fi
 
-    if [[ $ssh_status -ne 0 ]]; then
-        printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$query_output"
+    printf -v "$output_var" '%s' "$output"
+    return "$ssh_status"
+}
+
+encode_transport_field() {
+    printf '%s' "$1" | base64 | tr -d '\r\n'
+}
+
+decode_transport_field() {
+    python3 - "$1" <<'PY'
+import base64
+import sys
+
+text = sys.argv[1]
+if not text.strip():
+    print("", end="")
+    raise SystemExit(0)
+
+try:
+    decoded = base64.b64decode(text).decode("utf-8", "replace")
+except Exception:
+    decoded = text
+
+print(decoded, end="")
+PY
+}
+
+invoke_ssh() {
+    local host_alias="$1"
+    local remote_command="$2"
+
+    run_ssh "$host_alias" "$remote_command"
+}
+
+get_host_gpu_status() {
+    local host_alias="$1"
+    local query_output
+
+    if capture_ssh_output query_output \
+        "$host_alias" \
+        "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits"; then
+        :
+    else
+        local ssh_status="$?"
+        if [[ -z "$query_output" ]]; then
+            query_output="SSH command failed with exit code ${ssh_status}."
+        fi
+        printf 'HOST|%s|DOWN|%s\n' "$host_alias" "$(encode_transport_field "$query_output")"
         return 0
     fi
 
@@ -258,7 +311,7 @@ find_first_free_gpu() {
 find_preferred_gpu_or_error() {
     local ssh_name="$1"
     local gpu_id_text="$2"
-    local host_alias="zju_4090_${ssh_name}"
+    local host_alias
     local selected
     local host_state="DOWN"
     local host_note=""
@@ -269,6 +322,8 @@ find_preferred_gpu_or_error() {
         echo "GPU_ID must be a non-negative integer, got '$gpu_id_text'." >&2
         return 1
     fi
+
+    host_alias="$(normalize_ssh_host "$ssh_name")"
 
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
@@ -301,7 +356,13 @@ PY
     done < <(get_host_gpu_status "$host_alias")
 
     if [[ "$host_state" != "OK" ]]; then
-        echo "Preferred host '$host_alias' is unreachable: $host_note" >&2
+        local decoded_note
+        decoded_note="$(decode_transport_field "$host_note")"
+        if [[ -n "$decoded_note" ]]; then
+            printf "Preferred host '%s' is unreachable: %s\n" "$host_alias" "$decoded_note" >&2
+        else
+            printf "Preferred host '%s' is unreachable.\n" "$host_alias" >&2
+        fi
         return 1
     fi
 
@@ -396,9 +457,7 @@ start_remote_training() {
 
     encoded_command="$(printf '%s' "$prepared_command" | base64 -w 0)"
 
-    ssh \
-        -o BatchMode=yes \
-        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS" \
+    run_ssh \
         "$host_alias" \
         bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" <<'REMOTE'
 set -euo pipefail
@@ -474,7 +533,7 @@ capture_tmux_output() {
 }
 
 extract_wandb_run_name() {
-    python3 - <<'PY'
+    python3 /dev/fd/3 3<<'PY'
 import re
 import sys
 
@@ -498,7 +557,7 @@ PY
 }
 
 extract_failure_reason() {
-    python3 - <<'PY'
+    python3 /dev/fd/3 3<<'PY'
 import re
 import sys
 
