@@ -57,22 +57,28 @@ COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
 COLLECT_RANDOMNESS="low"
+COLLECT_ANNOTATE_SKILL=true  # 上游 7d1a72f 后，guidance-point conditioning 依赖 skill/guidance 标注
+COLLECT_SKILL_ON_IMAGE=true
 
 COLLECT_FLAGS=(
     --save-rollouts
     --save-depth-image
-    --annotate-skill
-    --skill-on-image
     --output-only-pickle
 )
+if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
+    COLLECT_FLAGS+=(--annotate-skill)
+fi
+if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
+    COLLECT_FLAGS+=(--skill-on-image)
+fi
 
 PROCESS_CONTROLLER="diffik"
 PROCESS_DOMAIN="sim"
 PROCESS_SOURCE="rollout"
 PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
-PROCESS_SUFFIX="rgbd-skill"
-PROCESS_OUTPUT_SUFFIX="rgbd-skill"
+PROCESS_SUFFIX="$([[ "$COLLECT_ANNOTATE_SKILL" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
+PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
 PROCESS_BATCH_SIZE=2
 PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${TMPDIR:-/tmp}/gpu-snatcher-auto-data-preparation-zarr}"
 

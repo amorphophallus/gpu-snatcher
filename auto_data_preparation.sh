@@ -6,13 +6,13 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # collect_data
-    # process_pickles
+    collect_data
+    process_pickles
     upload
 )
 
-LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
-# LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
+# LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
+LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
 REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
 # REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
@@ -57,7 +57,10 @@ COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
 COLLECT_RANDOMNESS="low"
+COLLECT_ANNOTATE_SKILL=false  # 是否加 2d guidance point 和收集 skill 标注
+COLLECT_SKILL_ON_IMAGE=false
 
+# 等比例配置数据
 declare -A TASK_EPISODE_LIMIT=(
     [one_leg]="$COLLECT_N_ROLLOUTS"
     [round_table]="$COLLECT_N_ROLLOUTS"
@@ -74,18 +77,22 @@ declare -A TASK_EPISODE_LIMIT=(
 COLLECT_FLAGS=(
     --save-rollouts
     --save-depth-image
-    --annotate-skill
-    --skill-on-image
     --output-only-pickle
 )
+if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
+    COLLECT_FLAGS+=(--annotate-skill)
+fi
+if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
+    COLLECT_FLAGS+=(--skill-on-image)
+fi
 
 PROCESS_CONTROLLER="diffik"
 PROCESS_DOMAIN="sim"
 PROCESS_SOURCE="rollout"
 PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
-PROCESS_SUFFIX="rgbd-skill"
-PROCESS_OUTPUT_SUFFIX="rgbd-skill"
+PROCESS_SUFFIX="$([[ "$COLLECT_ANNOTATE_SKILL" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
+PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
 PROCESS_BATCH_SIZE=2
 PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${TMPDIR:-/tmp}/gpu-snatcher-auto-data-preparation}"
 

@@ -31,6 +31,13 @@ function Get-CommandPartValue {
 $global:DATA_STORAGE_FORMAT = "lmdb"
 $global:DATA_LOAD_INTO_MEMORY = "false"
 $global:DATA_PATHS_OVERRIDE = ""
+$global:DATA_ANNOTATE_GUIDANCE_POINT = "true"
+$global:DATA_ANNOTATE_SKILL_ONE_HOT = "false"
+if (($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") -or ($global:DATA_ANNOTATE_SKILL_ONE_HOT -eq "true")) {
+    $global:DATA_SUFFIX = "rgbd-skill"
+} else {
+    $global:DATA_SUFFIX = "rgbd"
+}
 
 # 单卡训练命令
 $global:TRAIN_COMMAND_PARTS = @(
@@ -42,7 +49,9 @@ $global:TRAIN_COMMAND_PARTS = @(
     "task=[one_leg,round_table,lamp]",
     "data.demo_source=rollout",
     "data.demo_outcome=success",
-    "data.suffix=rgbd-skill",
+    "data.suffix=$global:DATA_SUFFIX",
+    "data.annotate_guidance_point=$global:DATA_ANNOTATE_GUIDANCE_POINT",
+    "data.annotate_skill_one_hot=$global:DATA_ANNOTATE_SKILL_ONE_HOT",
     "data.storage_format=$global:DATA_STORAGE_FORMAT",
     "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
     "data.dataloader_workers=4",

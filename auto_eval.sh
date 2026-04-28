@@ -4,26 +4,28 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    download
+    # download
     eval
 )
 
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
-REMOTE_SSH_HOST="230"
-RUN_ID="exalted-meadow-11"
+REMOTE_SSH_HOST="228"
+RUN_ID=""
 LOCAL_PATH="~/projects/robust-rearrangement-custom"
 TASK="round_table"
 PROJECT="rgbd_skill"
-MODEL_ARCH="diff_unet"
+MODEL_ARCH="fmt"
 NUM_DATA="200"
 EPOCH=""
 N_ENVS=3
-N_ROLLOUTS=18
+N_ROLLOUTS=36
 VISUALIZE=false
 DEBUG=false
 CONDA_ENV="rr"
-CHECKPOINT_PATTERN="*last*.pt"  # 暂时使用 last
+CHECKPOINT_PATTERN="*last*.pt"  # last=整个训练最后一个，latest=每500个epoch保存的最新一个
 CONNECT_TIMEOUT_SECONDS=10
+EVAL_ANNOTATE_SKILL=true  # guidance-point RGB conditioning / skill one-hot eval 都需要它
+EVAL_SKILL_ON_IMAGE=true
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
 ROLLOUT_SUFFIX_MODEL_NAME=""
@@ -37,9 +39,13 @@ PARAMS=(
     --save-rollouts
     --save-failures
     --save-depth-image
-    --annotate-skill
-    --skill-on-image
 )
+if [[ "$EVAL_ANNOTATE_SKILL" == "true" ]]; then
+    PARAMS+=(--annotate-skill)
+fi
+if [[ "$EVAL_ANNOTATE_SKILL" == "true" && "$EVAL_SKILL_ON_IMAGE" == "true" ]]; then
+    PARAMS+=(--skill-on-image)
+fi
 
 log_info() {
     printf '[%s] INFO %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"

@@ -29,6 +29,9 @@ get_command_part_value() {
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
+DATA_ANNOTATE_GUIDANCE_POINT="true"
+DATA_ANNOTATE_SKILL_ONE_HOT="false"
+DATA_SUFFIX="$([[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" || "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
 
 # Single-card training command.
 TRAIN_COMMAND_PARTS=(
@@ -40,7 +43,9 @@ TRAIN_COMMAND_PARTS=(
     "task=[one_leg,round_table,lamp]"
     data.demo_source=rollout
     data.demo_outcome=success
-    data.suffix=rgbd-skill
+    "data.suffix=${DATA_SUFFIX}"
+    "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
+    "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     data.dataloader_workers=4
