@@ -6,8 +6,8 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    collect_data
-    process_pickles
+    # collect_data
+    # process_pickles
     upload
 )
 
@@ -16,7 +16,7 @@ LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
 REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
 # REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="228"
+REMOTE_SSH_HOST="240"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
@@ -25,6 +25,9 @@ SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
 SSH_SERVER_ALIVE_INTERVAL_SECONDS="${SSH_SERVER_ALIVE_INTERVAL_SECONDS:-15}"
 SSH_SERVER_ALIVE_COUNT_MAX="${SSH_SERVER_ALIVE_COUNT_MAX:-12}"
 UPLOAD_BWLIMIT="${UPLOAD_BWLIMIT:-100m}"
+split_file=true
+part_size=1024  # 单位：MB
+parallel_upload_workers=4
 
 # Comment out a line to skip that task for collect/process.
 TASKS=(
@@ -101,6 +104,10 @@ PROCESS_FLAGS=(
 )
 
 UPLOAD_RELATIVE_DIR="data/processed/diffik/sim"
+
+SPLIT_FILE_ENABLED=false
+PART_SIZE_BYTES=0
+PARALLEL_UPLOAD_WORKERS=0
 
 # Functions
 
@@ -308,6 +315,355 @@ sanitize_ld_library_path() {
     )
 }
 
+validate_upload_config() {
+    case "$split_file" in
+        true|false)
+            ;;
+        *)
+            die "split_file must be true or false, got: ${split_file}"
+            ;;
+    esac
+
+    [[ "$part_size" =~ ^[0-9]+$ ]] || die "part_size must be a positive integer in MB, got: ${part_size}"
+    (( part_size > 0 )) || die "part_size must be greater than 0 MB, got: ${part_size}"
+
+    [[ "$parallel_upload_workers" =~ ^[0-9]+$ ]] || die "parallel_upload_workers must be a positive integer, got: ${parallel_upload_workers}"
+    (( parallel_upload_workers > 0 )) || die "parallel_upload_workers must be greater than 0, got: ${parallel_upload_workers}"
+
+    SPLIT_FILE_ENABLED="$split_file"
+    PART_SIZE_BYTES=$(( part_size * 1024 * 1024 ))
+    PARALLEL_UPLOAD_WORKERS="$parallel_upload_workers"
+}
+
+ensure_split_upload_runtime_dependencies() {
+    require_command dd
+    require_command find
+    require_command sort
+    require_command touch
+    require_command tr
+}
+
+build_remote_mkdir_cmd() {
+    local remote_dir="$1"
+
+    if [[ "$remote_dir" == "~" ]]; then
+        printf '%s\n' "mkdir -p -- ~"
+    elif [[ "$remote_dir" == "~/"* ]]; then
+        printf '%s\n' "mkdir -p -- ~/${remote_dir#~/}"
+    else
+        printf 'mkdir -p -- %q\n' "$remote_dir"
+    fi
+}
+
+build_remote_probe_cmd() {
+    local remote_base_dir="$1"
+
+    case "$remote_base_dir" in
+        "~")
+            printf '%s\n' "command -v rsync >/dev/null 2>&1 && command -v cat >/dev/null 2>&1 && command -v wc >/dev/null 2>&1 && command -v mv >/dev/null 2>&1 && command -v rm >/dev/null 2>&1 && command -v mkdir >/dev/null 2>&1 && test -d ~ && test -w ~"
+            ;;
+        "~/"*)
+            printf '%s\n' "command -v rsync >/dev/null 2>&1 && command -v cat >/dev/null 2>&1 && command -v wc >/dev/null 2>&1 && command -v mv >/dev/null 2>&1 && command -v rm >/dev/null 2>&1 && command -v mkdir >/dev/null 2>&1 && test -d ~/${remote_base_dir#~/} && test -w ~/${remote_base_dir#~/}"
+            ;;
+        *)
+            printf 'command -v rsync >/dev/null 2>&1 && command -v cat >/dev/null 2>&1 && command -v wc >/dev/null 2>&1 && command -v mv >/dev/null 2>&1 && command -v rm >/dev/null 2>&1 && command -v mkdir >/dev/null 2>&1 && test -d %q && test -w %q\n' "$remote_base_dir" "$remote_base_dir"
+            ;;
+    esac
+}
+
+sanitize_split_upload_key() {
+    local value="$1"
+
+    value="${value//\//_}"
+    value="${value// /_}"
+    value="${value//$'\t'/_}"
+    value="${value//$'\n'/_}"
+    value="${value//$'\r'/_}"
+    printf '%s' "$value" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+collect_split_file_candidates() {
+    local source_dir="$1"
+    local part_size_bytes="$2"
+    local -n split_paths_ref="$3"
+    local -n split_sizes_ref="$4"
+    local relative_path file_size
+
+    split_paths_ref=()
+    split_sizes_ref=()
+
+    while IFS=$'\t' read -r -d '' relative_path file_size; do
+        [[ -n "$relative_path" ]] || continue
+        split_paths_ref+=("$relative_path")
+        split_sizes_ref+=("$file_size")
+    done < <(find "$source_dir" -type f -size +"${part_size_bytes}"c -printf '%P\t%s\0' | LC_ALL=C sort -z)
+}
+
+get_remote_dataset_file_path() {
+    local remote_dataset_dir="$1"
+    local relative_path="$2"
+    printf '%s/%s\n' "${remote_dataset_dir%/}" "$relative_path"
+}
+
+get_remote_dataset_parent_dir() {
+    local remote_dataset_dir="$1"
+    local relative_path="$2"
+
+    if [[ "$relative_path" == */* ]]; then
+        printf '%s/%s\n' "${remote_dataset_dir%/}" "${relative_path%/*}"
+    else
+        printf '%s\n' "$remote_dataset_dir"
+    fi
+}
+
+format_remote_shell_value() {
+    local value="$1"
+
+    if [[ "$value" == "~" || "$value" == "~/"* ]]; then
+        printf '%s' "$value"
+    else
+        printf '%q' "$value"
+    fi
+}
+
+build_remote_merge_cmd() {
+    local remote_staging_dir="$1"
+    local remote_final_file="$2"
+    local expected_part_count="$3"
+    local expected_file_size="$4"
+    local remote_uploading_file script
+
+    remote_uploading_file="${remote_final_file}.uploading"
+
+    script="set -eu;"
+    script+=" LC_ALL=C; export LC_ALL;"
+    script+=" staging_dir=$(format_remote_shell_value "$remote_staging_dir");"
+    script+=" final_file=$(format_remote_shell_value "$remote_final_file");"
+    script+=" uploading_file=$(format_remote_shell_value "$remote_uploading_file");"
+    script+=" expected_part_count=${expected_part_count};"
+    script+=" expected_file_size=${expected_file_size};"
+    script+=" cd \"\$staging_dir\";"
+    script+=" part_number=1;"
+    script+=" part_number_width=${#expected_part_count};"
+    script+=" rm -f -- \"\$uploading_file\";"
+    script+=" : > \"\$uploading_file\";"
+    script+=" while [ \"\$part_number\" -le \"\$expected_part_count\" ]; do"
+    script+=" part_name=\$(printf 'part-%0*d' \"\$part_number_width\" \"\$part_number\");"
+    script+=" if [ ! -f \"\$part_name\" ]; then echo \"Missing expected split part \$part_name in \$staging_dir\" >&2; rm -f -- \"\$uploading_file\"; exit 1; fi;"
+    script+=" cat \"\$part_name\" >> \"\$uploading_file\";"
+    script+=" part_number=\$((part_number + 1));"
+    script+=" done;"
+    script+=" actual_file_size=\$(wc -c < \"\$uploading_file\");"
+    script+=" set -- \$actual_file_size;"
+    script+=" actual_file_size=\$1;"
+    script+=" if [ \"\$actual_file_size\" -ne \"\$expected_file_size\" ]; then echo \"Merged file size mismatch for \$final_file: expected \$expected_file_size, got \$actual_file_size\" >&2; rm -f -- \"\$uploading_file\"; exit 1; fi;"
+    script+=" mv -f -- \"\$uploading_file\" \"\$final_file\";"
+    script+=" rm -rf -- \"\$staging_dir\""
+
+    printf 'sh -eu -c %q\n' "$script"
+}
+
+wait_for_upload_slot() {
+    local max_parallel_jobs="$1"
+    local -n active_jobs_ref="$2"
+    local status
+
+    while (( active_jobs_ref >= max_parallel_jobs )); do
+        if wait -n; then
+            active_jobs_ref=$((active_jobs_ref - 1))
+        else
+            status=$?
+            active_jobs_ref=$((active_jobs_ref - 1))
+            return "$status"
+        fi
+    done
+}
+
+wait_for_all_upload_jobs() {
+    local -n active_jobs_ref="$1"
+    local status
+
+    while (( active_jobs_ref > 0 )); do
+        if wait -n; then
+            active_jobs_ref=$((active_jobs_ref - 1))
+        else
+            status=$?
+            active_jobs_ref=$((active_jobs_ref - 1))
+            while (( active_jobs_ref > 0 )); do
+                wait -n || true
+                active_jobs_ref=$((active_jobs_ref - 1))
+            done
+            return "$status"
+        fi
+    done
+}
+
+upload_split_part() {
+    local source_file="$1"
+    local relative_path="$2"
+    local source_file_size="$3"
+    local part_size_bytes="$4"
+    local part_number="$5"
+    local total_parts="$6"
+    local local_temp_root="$7"
+    local remote_staging_dir="$8"
+    local remote_ssh_host="$9"
+    local sanitized_ld_library_path="${10}"
+    local rsync_bin="${11}"
+    local rsync_ssh_cmd="${12}"
+    local part_number_width part_name local_part_file part_offset remaining_bytes current_part_bytes
+    local -a rsync_part_cmd
+
+    mkdir -p "$local_temp_root"
+    part_number_width="${#total_parts}"
+    printf -v part_name 'part-%0*d' "$part_number_width" "$part_number"
+    local_part_file="${local_temp_root%/}/${part_name}"
+    trap 'rm -f -- "$local_part_file"' EXIT
+
+    part_offset=$(( (part_number - 1) * part_size_bytes ))
+    remaining_bytes=$(( source_file_size - part_offset ))
+    if (( remaining_bytes <= part_size_bytes )); then
+        current_part_bytes="$remaining_bytes"
+    else
+        current_part_bytes="$part_size_bytes"
+    fi
+
+    dd \
+        if="$source_file" \
+        of="$local_part_file" \
+        bs=4M \
+        iflag=skip_bytes,count_bytes,fullblock \
+        skip="$part_offset" \
+        count="$current_part_bytes" \
+        status=none
+    touch -r "$source_file" "$local_part_file"
+
+    rsync_part_cmd=(
+        env
+        "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
+        "$rsync_bin"
+        -a
+        --no-owner
+        --no-group
+        --partial
+        --partial-dir=.rsync-partial
+        --human-readable
+        --info=progress2
+        -e
+        "$rsync_ssh_cmd"
+    )
+    if [[ -n "${UPLOAD_BWLIMIT// }" && "${UPLOAD_BWLIMIT}" != "0" ]]; then
+        rsync_part_cmd+=( "--bwlimit=${UPLOAD_BWLIMIT}" )
+    fi
+    rsync_part_cmd+=(
+        "$local_part_file"
+        "${remote_ssh_host}:${remote_staging_dir%/}/${part_name}"
+    )
+
+    run_with_retry \
+        "$UPLOAD_MAX_RETRIES" \
+        "$UPLOAD_RETRY_DELAY_SECONDS" \
+        "Uploading split part ${part_number}/${total_parts} for ${relative_path}" \
+        "${rsync_part_cmd[@]}"
+}
+
+upload_large_file_in_parts() {
+    local dataset_upload_dir="$1"
+    local relative_path="$2"
+    local source_file_size="$3"
+    local remote_dataset_dir="$4"
+    local remote_ssh_host="$5"
+    local sanitized_ld_library_path="$6"
+    local ssh_bin="$7"
+    local rsync_bin="$8"
+    local rsync_ssh_cmd="$9"
+    local source_file remote_final_file remote_parent_dir split_key local_temp_root remote_staging_dir
+    local remote_setup_cmd remote_merge_cmd
+    local -a ssh_setup_cmd ssh_merge_cmd
+    local total_parts active_jobs
+    local part_number
+
+    source_file="${dataset_upload_dir%/}/${relative_path}"
+    [[ -f "$source_file" ]] || die "Split upload source file does not exist: ${source_file}"
+
+    total_parts=$(( (source_file_size + PART_SIZE_BYTES - 1) / PART_SIZE_BYTES ))
+    remote_final_file="$(get_remote_dataset_file_path "$remote_dataset_dir" "$relative_path")"
+    remote_parent_dir="$(get_remote_dataset_parent_dir "$remote_dataset_dir" "$relative_path")"
+    split_key="$(sanitize_split_upload_key "${relative_path}-${source_file_size}-${PART_SIZE_BYTES}")"
+    local_temp_root="${TMPDIR:-/tmp}/gpu-snatcher-split-upload/${split_key}"
+    remote_staging_dir="${remote_dataset_dir%/}/.split-upload-${split_key}.parts"
+
+    log_info "Uploading large file in ${total_parts} parts: ${relative_path} (${source_file_size} bytes, ${PART_SIZE_BYTES} bytes per part, ${PARALLEL_UPLOAD_WORKERS} workers)"
+
+    mkdir -p "$local_temp_root"
+    remote_setup_cmd="$(build_remote_mkdir_cmd "$remote_parent_dir") && $(build_remote_mkdir_cmd "$remote_staging_dir")"
+    ssh_setup_cmd=(
+        env
+        "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
+        "$ssh_bin"
+        -o BatchMode=yes
+        -o StrictHostKeyChecking="$SSH_STRICT_HOST_KEY_CHECKING"
+        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS"
+        -o ServerAliveInterval="$SSH_SERVER_ALIVE_INTERVAL_SECONDS"
+        -o ServerAliveCountMax="$SSH_SERVER_ALIVE_COUNT_MAX"
+        -o TCPKeepAlive=yes
+        -o IPQoS=throughput
+        "$remote_ssh_host"
+        "$remote_setup_cmd"
+    )
+    run_with_retry \
+        "$UPLOAD_MAX_RETRIES" \
+        "$UPLOAD_RETRY_DELAY_SECONDS" \
+        "Ensuring remote split upload staging exists for ${relative_path}" \
+        "${ssh_setup_cmd[@]}"
+
+    active_jobs=0
+    for (( part_number = 1; part_number <= total_parts; part_number++ )); do
+        wait_for_upload_slot "$PARALLEL_UPLOAD_WORKERS" active_jobs || {
+            wait_for_all_upload_jobs active_jobs || true
+            return 1
+        }
+        upload_split_part \
+            "$source_file" \
+            "$relative_path" \
+            "$source_file_size" \
+            "$PART_SIZE_BYTES" \
+            "$part_number" \
+            "$total_parts" \
+            "$local_temp_root" \
+            "$remote_staging_dir" \
+            "$remote_ssh_host" \
+            "$sanitized_ld_library_path" \
+            "$rsync_bin" \
+            "$rsync_ssh_cmd" &
+        active_jobs=$((active_jobs + 1))
+    done
+    wait_for_all_upload_jobs active_jobs
+
+    remote_merge_cmd="$(build_remote_merge_cmd "$remote_staging_dir" "$remote_final_file" "$total_parts" "$source_file_size")"
+    ssh_merge_cmd=(
+        env
+        "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
+        "$ssh_bin"
+        -o BatchMode=yes
+        -o StrictHostKeyChecking="$SSH_STRICT_HOST_KEY_CHECKING"
+        -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS"
+        -o ServerAliveInterval="$SSH_SERVER_ALIVE_INTERVAL_SECONDS"
+        -o ServerAliveCountMax="$SSH_SERVER_ALIVE_COUNT_MAX"
+        -o TCPKeepAlive=yes
+        -o IPQoS=throughput
+        "$remote_ssh_host"
+        "$remote_merge_cmd"
+    )
+    run_with_retry \
+        "$UPLOAD_MAX_RETRIES" \
+        "$UPLOAD_RETRY_DELAY_SECONDS" \
+        "Merging split parts for ${relative_path} on ${remote_ssh_host}" \
+        "${ssh_merge_cmd[@]}"
+
+    rmdir "$local_temp_root" 2>/dev/null || true
+}
+
 ensure_python_runtime_dirs() {
     local cache_root="$1"
 
@@ -500,20 +856,37 @@ upload_step() {
     local -a rsync_upload_cmd
     local rsync_ssh_cmd
     local -a ssh_common_args
+    local -a split_paths=()
+    local -a split_sizes=()
+    local split_index
 
     dataset_upload_dir="$(get_processed_dataset_absolute_path "$local_root")"
     [[ -d "$dataset_upload_dir" ]] || die "Merged LMDB directory does not exist: ${dataset_upload_dir}"
+    validate_upload_config
 
     remote_ssh_host="$(normalize_remote_ssh_host "${REMOTE_SSH_HOST:-}")"
     remote_dataset_dir="${REMOTE_PATH%/}/$(get_processed_dataset_relative_path)"
 
     if [[ "$remote_dataset_dir" == /mnt/nas* ]]; then
+        if [[ "$SPLIT_FILE_ENABLED" == "true" ]]; then
+            log_info "split_file=true is bypassed for direct /mnt/nas rsync. Split upload will only be used if SSH fallback is needed."
+        fi
         if try_direct_nas_rsync "$dataset_upload_dir" "$remote_dataset_dir"; then
             return 0
         fi
     fi
 
     [[ -n "$remote_ssh_host" ]] || die "REMOTE_SSH_HOST is required for upload."
+
+    if [[ "$SPLIT_FILE_ENABLED" == "true" ]]; then
+        ensure_split_upload_runtime_dependencies
+        collect_split_file_candidates "$dataset_upload_dir" "$PART_SIZE_BYTES" split_paths split_sizes
+        if (( ${#split_paths[@]} > 0 )); then
+            log_info "Split upload enabled: ${#split_paths[@]} large file(s) exceed ${PART_SIZE_BYTES} bytes."
+        else
+            log_info "Split upload enabled, but no files exceed ${PART_SIZE_BYTES} bytes. Falling back to the regular rsync upload path."
+        fi
+    fi
 
     ssh_bin="$(resolve_command_path ssh)"
     rsync_bin="$(resolve_command_path rsync)"
@@ -529,12 +902,8 @@ upload_step() {
     )
     rsync_ssh_cmd="$(quote_command "$ssh_bin" "${ssh_common_args[@]}")"
 
-    if [[ "$remote_dataset_dir" == "~/"* ]]; then
-        remote_mkdir_cmd="mkdir -p -- ~/${remote_dataset_dir#~/}"
-    else
-        printf -v remote_mkdir_cmd 'mkdir -p -- %q' "$remote_dataset_dir"
-    fi
-    printf -v remote_probe_cmd 'command -v rsync >/dev/null 2>&1 && test -d %q && test -w %q' "${REMOTE_PATH%/}" "${REMOTE_PATH%/}"
+    remote_mkdir_cmd="$(build_remote_mkdir_cmd "$remote_dataset_dir")"
+    remote_probe_cmd="$(build_remote_probe_cmd "${REMOTE_PATH%/}")"
 
     ssh_mkdir_cmd=(
         env
@@ -565,12 +934,19 @@ upload_step() {
         --info=progress2
         -e
         "$rsync_ssh_cmd"
-        "${dataset_upload_dir}/"
-        "${remote_ssh_host}:${remote_dataset_dir}/"
     )
+    if [[ "$SPLIT_FILE_ENABLED" == "true" ]]; then
+        for split_index in "${!split_paths[@]}"; do
+            rsync_upload_cmd+=( "--exclude=/${split_paths[$split_index]}" )
+        done
+    fi
     if [[ -n "${UPLOAD_BWLIMIT// }" && "${UPLOAD_BWLIMIT}" != "0" ]]; then
         rsync_upload_cmd+=( "--bwlimit=${UPLOAD_BWLIMIT}" )
     fi
+    rsync_upload_cmd+=(
+        "${dataset_upload_dir}/"
+        "${remote_ssh_host}:${remote_dataset_dir}/"
+    )
 
     run_with_retry \
         "$UPLOAD_MAX_RETRIES" \
@@ -589,6 +965,21 @@ upload_step() {
         "$UPLOAD_RETRY_DELAY_SECONDS" \
         "Uploading merged LMDB ${dataset_upload_dir} to ${remote_ssh_host}:${remote_dataset_dir} via rsync" \
         "${rsync_upload_cmd[@]}"
+
+    if [[ "$SPLIT_FILE_ENABLED" == "true" ]]; then
+        for split_index in "${!split_paths[@]}"; do
+            upload_large_file_in_parts \
+                "$dataset_upload_dir" \
+                "${split_paths[$split_index]}" \
+                "${split_sizes[$split_index]}" \
+                "$remote_dataset_dir" \
+                "$remote_ssh_host" \
+                "$sanitized_ld_library_path" \
+                "$ssh_bin" \
+                "$rsync_bin" \
+                "$rsync_ssh_cmd"
+        done
+    fi
 }
 
 main() {
