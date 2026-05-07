@@ -62,6 +62,7 @@ COLLECT_OBSERVATION_SPACE="image"
 COLLECT_RANDOMNESS="low"
 COLLECT_ANNOTATE_SKILL=false  # 是否加 2d guidance point 和收集 skill 标注
 COLLECT_SKILL_ON_IMAGE=false
+COLLECT_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # 等比例配置数据
 declare -A TASK_EPISODE_LIMIT=(
@@ -87,6 +88,9 @@ if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
 fi
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--skill-on-image)
+fi
+if [[ "$COLLECT_PERTURB_MODE" != "none" ]]; then
+    COLLECT_FLAGS+=(--perturb-mode "$COLLECT_PERTURB_MODE")
 fi
 
 PROCESS_CONTROLLER="diffik"
