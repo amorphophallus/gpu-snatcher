@@ -11,10 +11,11 @@ STEPS=(
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
 REMOTE_SSH_HOST="228"
 RUN_ID=""
-LOCAL_PATH="~/projects/robust-rearrangement-custom"
+LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
+# LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
 TASK="round_table"
-PROJECT="rgbd_skill"
-MODEL_ARCH="fmt"
+PROJECT="rgbd"
+MODEL_ARCH="dit"
 NUM_DATA="200"
 EPOCH=""
 N_ENVS=3
@@ -24,8 +25,9 @@ DEBUG=false
 CONDA_ENV="rr"
 CHECKPOINT_PATTERN="*last*.pt"  # last=整个训练最后一个，latest=每500个epoch保存的最新一个
 CONNECT_TIMEOUT_SECONDS=10
-EVAL_ANNOTATE_SKILL=true  # guidance-point RGB conditioning / skill one-hot eval 都需要它
-EVAL_SKILL_ON_IMAGE=true
+EVAL_ANNOTATE_SKILL=false  # guidance-point RGB conditioning / skill one-hot eval 都需要它
+EVAL_GUIDANCE_POINT_ON_IMAGE=false
+EVAL_SKILL_ON_IMAGE=false
 EVAL_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
@@ -43,6 +45,9 @@ PARAMS=(
 )
 if [[ "$EVAL_ANNOTATE_SKILL" == "true" ]]; then
     PARAMS+=(--annotate-skill)
+fi
+if [[ "$EVAL_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+    PARAMS+=(--guidance-point-on-image)
 fi
 if [[ "$EVAL_ANNOTATE_SKILL" == "true" && "$EVAL_SKILL_ON_IMAGE" == "true" ]]; then
     PARAMS+=(--skill-on-image)
@@ -484,6 +489,7 @@ eval_step() {
     (
         cd "$local_root"
         activate_conda_env "$CONDA_ENV"
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/hy/anaconda3/envs/rr/lib
         "${eval_cmd[@]}"
     )
     log_info "Evaluation finished successfully."

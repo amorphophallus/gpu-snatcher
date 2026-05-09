@@ -6,17 +6,17 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # collect_data
-    # process_pickles
-    upload
+    collect_data
+    process_pickles
+    # upload
 )
 
-# LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
-LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
+LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
+# LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
 REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
 # REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="240"
+REMOTE_SSH_HOST="243"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
@@ -25,7 +25,7 @@ SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
 SSH_SERVER_ALIVE_INTERVAL_SECONDS="${SSH_SERVER_ALIVE_INTERVAL_SECONDS:-15}"
 SSH_SERVER_ALIVE_COUNT_MAX="${SSH_SERVER_ALIVE_COUNT_MAX:-12}"
 UPLOAD_BWLIMIT="${UPLOAD_BWLIMIT:-100m}"
-split_file=true
+split_file=false  # 上传的时候要不要给大文件分片,在 218 上传选 false,在其他网络环境下上传选 true
 part_size=1024  # 单位：MB
 parallel_upload_workers=4
 
@@ -55,13 +55,14 @@ declare -A TASK_ROLLOUT_AFTER_SUCCESS=(
 )
 
 COLLECT_N_ENVS=4
-COLLECT_N_ROLLOUTS=200  # 要多少数据
+COLLECT_N_ROLLOUTS=212  # 跑多少条数据,一般设置为 需要的数据量 / policy 成功率
 COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
 COLLECT_RANDOMNESS="low"
-COLLECT_ANNOTATE_SKILL=false  # 是否加 2d guidance point 和收集 skill 标注
-COLLECT_SKILL_ON_IMAGE=false
+COLLECT_ANNOTATE_SKILL=true  # 是否收集 skill 标注
+COLLECT_GUIDANCE_POINT_ON_IMAGE=false  # 是否加 2d guidance point 到图片上
+COLLECT_SKILL_ON_IMAGE=false  # 是否把 skill 标注到图片上,只影响输出的视频
 COLLECT_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # 等比例配置数据
@@ -86,6 +87,9 @@ COLLECT_FLAGS=(
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
     COLLECT_FLAGS+=(--annotate-skill)
 fi
+if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+    COLLECT_FLAGS+=(--guidance-point-on-image)
+fi
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--skill-on-image)
 fi
@@ -98,7 +102,15 @@ PROCESS_DOMAIN="sim"
 PROCESS_SOURCE="rollout"
 PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
-PROCESS_SUFFIX="$([[ "$COLLECT_ANNOTATE_SKILL" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
+if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
+    if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+        PROCESS_SUFFIX="rgbd-skill"
+    else
+        PROCESS_SUFFIX="rgbd-only-skill"
+    fi
+else
+    PROCESS_SUFFIX="rgbd"
+fi
 PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
 PROCESS_BATCH_SIZE=2
 PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${TMPDIR:-/tmp}/gpu-snatcher-auto-data-preparation}"
