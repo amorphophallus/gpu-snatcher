@@ -6,9 +6,9 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    collect_data
-    process_pickles
-    # upload
+    # collect_data
+    # process_pickles
+    upload
 )
 
 LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
@@ -268,6 +268,32 @@ get_processed_dataset_relative_path() {
 get_processed_dataset_absolute_path() {
     local local_root="$1"
     printf '%s/%s\n' "${local_root%/}" "$(get_processed_dataset_relative_path)"
+}
+
+get_processed_dataset_parent_relative_path() {
+    local task_group parent_path
+
+    task_group="$(get_task_group_name)"
+    parent_path="${UPLOAD_RELATIVE_DIR%/}/${task_group}/${PROCESS_SOURCE}/${PROCESS_RANDOMNESS}"
+
+    if [[ -n "$PROCESS_OUTPUT_SUFFIX" ]]; then
+        parent_path="${parent_path}/${PROCESS_OUTCOME}"
+    fi
+
+    printf '%s\n' "$parent_path"
+}
+
+get_processed_dataset_parent_absolute_path() {
+    local local_root="$1"
+    printf '%s/%s\n' "${local_root%/}" "$(get_processed_dataset_parent_relative_path)"
+}
+
+get_lmdb_find_pattern() {
+    if [[ -n "$PROCESS_OUTPUT_SUFFIX" ]]; then
+        printf '%s\n' "${PROCESS_OUTPUT_SUFFIX}*.lmdb"
+    else
+        printf '%s\n' "${PROCESS_OUTCOME}*.lmdb"
+    fi
 }
 
 get_conda_executable() {
@@ -863,7 +889,38 @@ try_direct_nas_rsync() {
 
 upload_step() {
     local local_root="$1"
-    local dataset_upload_dir remote_ssh_host remote_dataset_dir sanitized_ld_library_path
+    local parent_dir find_pattern
+    local -a matching_dirs=()
+    local dataset_upload_dir dataset_basename
+
+    parent_dir="$(get_processed_dataset_parent_absolute_path "$local_root")"
+    [[ -d "$parent_dir" ]] || die "Merged LMDB parent directory does not exist: ${parent_dir}"
+    find_pattern="$(get_lmdb_find_pattern)"
+
+    while IFS= read -r -d '' dir; do
+        matching_dirs+=("$dir")
+    done < <(find "$parent_dir" -maxdepth 1 -type d -name "$find_pattern" -print0 | LC_ALL=C sort -z)
+
+    (( ${#matching_dirs[@]} > 0 )) || die "No matching LMDB directories found in: ${parent_dir} (pattern: ${find_pattern})"
+
+    log_info "Found ${#matching_dirs[@]} LMDB director(ies) to upload:"
+    for dir in "${matching_dirs[@]}"; do
+        log_info "  - ${dir}"
+    done
+
+    validate_upload_config
+
+    for dataset_upload_dir in "${matching_dirs[@]}"; do
+        dataset_basename="${dataset_upload_dir##*/}"
+        log_info "Starting upload for: ${dataset_basename}"
+        upload_single_dataset "$dataset_upload_dir"
+    done
+}
+
+upload_single_dataset() {
+    local dataset_upload_dir="$1"
+    local dataset_basename="${dataset_upload_dir##*/}"
+    local remote_ssh_host remote_dataset_dir sanitized_ld_library_path
     local ssh_bin rsync_bin
     local remote_mkdir_cmd
     local remote_probe_cmd
@@ -876,12 +933,8 @@ upload_step() {
     local -a split_sizes=()
     local split_index
 
-    dataset_upload_dir="$(get_processed_dataset_absolute_path "$local_root")"
-    [[ -d "$dataset_upload_dir" ]] || die "Merged LMDB directory does not exist: ${dataset_upload_dir}"
-    validate_upload_config
-
     remote_ssh_host="$(normalize_remote_ssh_host "${REMOTE_SSH_HOST:-}")"
-    remote_dataset_dir="${REMOTE_PATH%/}/$(get_processed_dataset_relative_path)"
+    remote_dataset_dir="${REMOTE_PATH%/}/$(get_processed_dataset_parent_relative_path)/${dataset_basename}"
 
     if [[ "$remote_dataset_dir" == /mnt/nas* ]]; then
         if [[ "$SPLIT_FILE_ENABLED" == "true" ]]; then
