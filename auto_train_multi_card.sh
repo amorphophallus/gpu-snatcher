@@ -31,7 +31,13 @@ DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
 DATA_ANNOTATE_GUIDANCE_POINT="false"  # 是否在 rgb 图像上标注引导点
 DATA_ANNOTATE_SKILL_ONE_HOT="false"  # 是否给模型输入 one-hot skill 向量
-DATA_SUFFIX="$([[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" || "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
+if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
+    DATA_SUFFIX="rgbd-skill"
+elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
+    DATA_SUFFIX="rgbd-only-skill"
+else
+    DATA_SUFFIX="rgbd"
+fi
 
 # Multi-card training command.
 TRAIN_COMMAND_PARTS=(

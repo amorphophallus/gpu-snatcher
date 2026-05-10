@@ -31,7 +31,13 @@ DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
 DATA_ANNOTATE_GUIDANCE_POINT="true"
 DATA_ANNOTATE_SKILL_ONE_HOT="false"
-DATA_SUFFIX="$([[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" || "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]] && printf 'rgbd-skill' || printf 'rgbd')"
+if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
+    DATA_SUFFIX="rgbd-skill"
+elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
+    DATA_SUFFIX="rgbd-only-skill"
+else
+    DATA_SUFFIX="rgbd"
+fi
 
 # Single-card training command.
 TRAIN_COMMAND_PARTS=(

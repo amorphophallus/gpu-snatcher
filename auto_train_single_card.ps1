@@ -33,8 +33,10 @@ $global:DATA_LOAD_INTO_MEMORY = "false"
 $global:DATA_PATHS_OVERRIDE = ""
 $global:DATA_ANNOTATE_GUIDANCE_POINT = "true"
 $global:DATA_ANNOTATE_SKILL_ONE_HOT = "false"
-if (($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") -or ($global:DATA_ANNOTATE_SKILL_ONE_HOT -eq "true")) {
+if ($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") {
     $global:DATA_SUFFIX = "rgbd-skill"
+} elseif ($global:DATA_ANNOTATE_SKILL_ONE_HOT -eq "true") {
+    $global:DATA_SUFFIX = "rgbd-only-skill"
 } else {
     $global:DATA_SUFFIX = "rgbd"
 }
