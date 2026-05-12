@@ -33,8 +33,13 @@ $global:DATA_LOAD_INTO_MEMORY = "false"
 $global:DATA_PATHS_OVERRIDE = ""
 $global:DATA_ANNOTATE_GUIDANCE_POINT = "true"
 $global:DATA_ANNOTATE_SKILL_ONE_HOT = "false"
+$global:DATA_GUIDANCE_POINT_COLORED = "false"  # yellow=pick/screw, red=place/push/insert
 if ($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") {
-    $global:DATA_SUFFIX = "rgbd-skill"
+    if ($global:DATA_GUIDANCE_POINT_COLORED -eq "true") {
+        $global:DATA_SUFFIX = "rgbd-skill-colored"
+    } else {
+        $global:DATA_SUFFIX = "rgbd-skill"
+    }
 } elseif ($global:DATA_ANNOTATE_SKILL_ONE_HOT -eq "true") {
     $global:DATA_SUFFIX = "rgbd-only-skill"
 } else {

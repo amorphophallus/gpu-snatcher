@@ -58,10 +58,15 @@ function Get-CommandPartValue {
 $global:DATA_STORAGE_FORMAT = "lmdb"
 $global:DATA_LOAD_INTO_MEMORY = "false"
 $global:DATA_PATHS_OVERRIDE = ""
-$global:DATA_ANNOTATE_GUIDANCE_POINT = "true"
+$global:DATA_ANNOTATE_GUIDANCE_POINT = "false"
 $global:DATA_ANNOTATE_SKILL_ONE_HOT = "false"
+$global:DATA_GUIDANCE_POINT_COLORED = "false"  # yellow=pick/screw, red=place/push/insert
 if ($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") {
-    $global:DATA_SUFFIX = "rgbd-skill"
+    if ($global:DATA_GUIDANCE_POINT_COLORED -eq "true") {
+        $global:DATA_SUFFIX = "rgbd-skill-colored"
+    } else {
+        $global:DATA_SUFFIX = "rgbd-skill"
+    }
 } elseif ($global:DATA_ANNOTATE_SKILL_ONE_HOT -eq "true") {
     $global:DATA_SUFFIX = "rgbd-only-skill"
 } else {
@@ -75,11 +80,12 @@ $global:TRAIN_COMMAND_PARTS = @(
     "--nproc_per_node=2",
     "-m",
     "src.train.bc_ddp",
-    "+experiment=rgbd/fmt",  # diff_unet, dit, fmt
-    "vision_encoder.pretrained=true",
+    "+experiment=image/dit",  # diff_unet, dit, fmt
+    "vision_encoder=resnet",
+    "vision_encoder.pretrained=false",
     "task=round_table",
     "data.demo_source=rollout",
-    "data.data_subset=100",
+    "data.data_subset=200",
     "data.demo_outcome=success",
     "data.suffix=$global:DATA_SUFFIX",
     "data.annotate_guidance_point=$global:DATA_ANNOTATE_GUIDANCE_POINT",
@@ -91,12 +97,12 @@ $global:TRAIN_COMMAND_PARTS = @(
     "training.num_epochs=3000",
     "training.steps_per_epoch=100",
     "training.save_per_epoch=500",
-    "wandb.project=multi-task-rgbd-skill-low-500",
+    "wandb.project=multi-task-rgbd-skill-low-0428",
     "wandb.mode=online",
     "randomness=low",
     "dryrun=false",
     "data.ddp_shard_enabled=true",
-    "wandb.continue_run_id=9mwpmals"
+    "wandb.continue_run_id=h6opdhvm"
 )
 if (-not [string]::IsNullOrWhiteSpace($global:DATA_PATHS_OVERRIDE)) {
     $global:TRAIN_COMMAND_PARTS += "data.data_paths_override=$global:DATA_PATHS_OVERRIDE"
@@ -106,13 +112,13 @@ $global:WANDB_PROJECT_NAME = Get-CommandPartValue -Parts $global:TRAIN_COMMAND_P
 if ([string]::IsNullOrWhiteSpace($global:WANDB_PROJECT_NAME)) {
     $global:WANDB_PROJECT_NAME = "project"
 }
-$global:SSH_NAME = "236"
+$global:SSH_NAME = "240"
 $global:NUM_GPUs = 2
-$global:GPU_ID = ""
+$global:GPU_ID = "1,3"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240")
-# $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
-$global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
+$global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
+# $global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
     "birch",

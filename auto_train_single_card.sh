@@ -31,8 +31,13 @@ DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
 DATA_ANNOTATE_GUIDANCE_POINT="true"
 DATA_ANNOTATE_SKILL_ONE_HOT="false"
+DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
 if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
-    DATA_SUFFIX="rgbd-skill"
+    if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
+        DATA_SUFFIX="rgbd-skill-colored"
+    else
+        DATA_SUFFIX="rgbd-skill"
+    fi
 elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
     DATA_SUFFIX="rgbd-only-skill"
 else

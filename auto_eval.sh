@@ -28,6 +28,7 @@ CONNECT_TIMEOUT_SECONDS=10
 EVAL_ANNOTATE_SKILL=false  # guidance-point RGB conditioning / skill one-hot eval 都需要它
 EVAL_GUIDANCE_POINT_ON_IMAGE=false
 EVAL_SKILL_ON_IMAGE=false
+EVAL_GUIDANCE_POINT_COLORED=false
 EVAL_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
@@ -48,6 +49,9 @@ if [[ "$EVAL_ANNOTATE_SKILL" == "true" ]]; then
 fi
 if [[ "$EVAL_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
     PARAMS+=(--guidance-point-on-image)
+fi
+if [[ "$EVAL_GUIDANCE_POINT_COLORED" == "true" ]]; then
+    PARAMS+=(--guidance-point-colored)
 fi
 if [[ "$EVAL_ANNOTATE_SKILL" == "true" && "$EVAL_SKILL_ON_IMAGE" == "true" ]]; then
     PARAMS+=(--skill-on-image)

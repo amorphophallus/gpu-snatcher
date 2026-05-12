@@ -63,6 +63,7 @@ COLLECT_RANDOMNESS="low"
 COLLECT_ANNOTATE_SKILL=true  # 是否收集 skill 标注
 COLLECT_GUIDANCE_POINT_ON_IMAGE=false  # 是否加 2d guidance point 到图片上
 COLLECT_SKILL_ON_IMAGE=false  # 是否把 skill 标注到图片上,只影响输出的视频
+COLLECT_GUIDANCE_POINT_COLORED=false  # 是否使用彩色引导点 (yellow=pick/screw, red=place/push/insert)
 COLLECT_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # 等比例配置数据
@@ -90,6 +91,9 @@ fi
 if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--guidance-point-on-image)
 fi
+if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
+    COLLECT_FLAGS+=(--guidance-point-colored)
+fi
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--skill-on-image)
 fi
@@ -104,7 +108,11 @@ PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
     if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
-        PROCESS_SUFFIX="rgbd-skill"
+        if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
+            PROCESS_SUFFIX="rgbd-skill-colored"
+        else
+            PROCESS_SUFFIX="rgbd-skill"
+        fi
     else
         PROCESS_SUFFIX="rgbd-only-skill"
     fi

@@ -31,8 +31,13 @@ DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
 DATA_ANNOTATE_GUIDANCE_POINT="false"  # 是否在 rgb 图像上标注引导点
 DATA_ANNOTATE_SKILL_ONE_HOT="false"  # 是否给模型输入 one-hot skill 向量
+DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
 if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
-    DATA_SUFFIX="rgbd-skill"
+    if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
+        DATA_SUFFIX="rgbd-skill-colored"
+    else
+        DATA_SUFFIX="rgbd-skill"
+    fi
 elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
     DATA_SUFFIX="rgbd-only-skill"
 else

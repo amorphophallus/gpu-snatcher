@@ -60,6 +60,7 @@ COLLECT_RANDOMNESS="low"
 COLLECT_ANNOTATE_SKILL=true  # 上游 7d1a72f 后，guidance-point conditioning 依赖 skill/guidance 标注
 COLLECT_GUIDANCE_POINT_ON_IMAGE=false
 COLLECT_SKILL_ON_IMAGE=true
+COLLECT_GUIDANCE_POINT_COLORED=false  # yellow=pick/screw, red=place/push/insert
 
 COLLECT_FLAGS=(
     --save-rollouts
@@ -72,6 +73,9 @@ fi
 if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--guidance-point-on-image)
 fi
+if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
+    COLLECT_FLAGS+=(--guidance-point-colored)
+fi
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--skill-on-image)
 fi
@@ -83,7 +87,11 @@ PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
     if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
-        PROCESS_SUFFIX="rgbd-skill"
+        if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
+            PROCESS_SUFFIX="rgbd-skill-colored"
+        else
+            PROCESS_SUFFIX="rgbd-skill"
+        fi
     else
         PROCESS_SUFFIX="rgbd-only-skill"
     fi
