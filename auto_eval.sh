@@ -33,6 +33,7 @@ EVAL_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
 ROLLOUT_SUFFIX_MODEL_NAME=""
+OVERWRITE_WT_PATH=""  # 如果设置，直接使用此路径作为 --wt-path，跳过自动拼接和下载步骤
 
 PARAMS=(
     --if-exists append
@@ -540,9 +541,13 @@ main() {
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
 
-    checkpoint_name_tag="$(checkpoint_pattern_to_name_tag "$CHECKPOINT_PATTERN")"
-    destination_dir="${local_root}/checkpoints/bc/${TASK}/low"
-    local_checkpoint="${destination_dir}/${PROJECT}_${MODEL_ARCH}_${NUM_DATA}traj_${checkpoint_name_tag}_${EPOCH}.pt"
+    if [[ -n "${OVERWRITE_WT_PATH// }" ]]; then
+        local_checkpoint="$OVERWRITE_WT_PATH"
+    else
+        checkpoint_name_tag="$(checkpoint_pattern_to_name_tag "$CHECKPOINT_PATTERN")"
+        destination_dir="${local_root}/checkpoints/bc/${TASK}/low"
+        local_checkpoint="${destination_dir}/${PROJECT}_${MODEL_ARCH}_${NUM_DATA}traj_${checkpoint_name_tag}_${EPOCH}.pt"
+    fi
 
     rollout_suffix_model_name="$ROLLOUT_SUFFIX_MODEL_NAME"
     if [[ -z "$rollout_suffix_model_name" ]]; then
@@ -558,6 +563,10 @@ main() {
     for step in "${STEPS[@]}"; do
         case "$step" in
             download)
+                if [[ -n "${OVERWRITE_WT_PATH// }" ]]; then
+                    log_info "OVERWRITE_WT_PATH is set, skipping download step."
+                    continue
+                fi
                 download_checkpoint_step "$local_checkpoint"
                 ;;
             eval)
