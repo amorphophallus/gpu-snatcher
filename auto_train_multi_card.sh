@@ -29,9 +29,9 @@ get_command_part_value() {
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
-DATA_ANNOTATE_GUIDANCE_POINT="false"  # 是否在 rgb 图像上标注引导点
+DATA_ANNOTATE_GUIDANCE_POINT="true"  # 是否在 rgb 图像上标注引导点
 DATA_ANNOTATE_SKILL_ONE_HOT="false"  # 是否给模型输入 one-hot skill 向量
-DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
+DATA_GUIDANCE_POINT_COLORED="true"  # yellow=pick/screw, red=place/push/insert
 if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
     if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
         DATA_SUFFIX="rgbd-skill-colored"
@@ -51,9 +51,9 @@ TRAIN_COMMAND_PARTS=(
     --nproc_per_node=2
     -m
     src.train.bc_ddp
-    +experiment=image/dit  # diff_unet, dit, fmt
-    vision_encoder=resnet
-    vision_encoder.pretrained=false
+    +experiment=rgbd/dit  # diff_unet, dit, fmt
+    # vision_encoder=resnet
+    # vision_encoder.pretrained=false
     "task=round_table"  # [one_leg, round_table, lamp]
     data.demo_source=rollout
     data.data_subset=200
@@ -80,11 +80,11 @@ fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
-SSH_NAME="236"
+SSH_NAME="240"
 NUM_GPUS="2"
-GPU_ID=""
-# DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
-DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236 & 238
+GPU_ID="2,3"
+DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
+# DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236 & 238
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240)
 

@@ -6,17 +6,17 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # collect_data
-    # process_pickles
+    collect_data
+    process_pickles
     upload
 )
 
-LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
-# LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
-REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
-# REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
+# LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
+LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
+# REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
+REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="243"
+REMOTE_SSH_HOST="232"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 UPLOAD_MAX_RETRIES=5
@@ -25,15 +25,15 @@ SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
 SSH_SERVER_ALIVE_INTERVAL_SECONDS="${SSH_SERVER_ALIVE_INTERVAL_SECONDS:-15}"
 SSH_SERVER_ALIVE_COUNT_MAX="${SSH_SERVER_ALIVE_COUNT_MAX:-12}"
 UPLOAD_BWLIMIT="${UPLOAD_BWLIMIT:-100m}"
-split_file=false  # 上传的时候要不要给大文件分片,在 218 上传选 false,在其他网络环境下上传选 true
+split_file=true  # 上传的时候要不要给大文件分片,在 218 上传选 false,在其他网络环境下上传选 true
 part_size=1024  # 单位：MB
 parallel_upload_workers=4
 
 # Comment out a line to skip that task for collect/process.
 TASKS=(
-    # one_leg
+    one_leg
     round_table
-    # lamp
+    lamp
 )
 
 declare -A TASK_CKPT=(  # relative to local root
@@ -50,20 +50,20 @@ declare -A TASK_MAX_ROLLOUT_STEPS=(
 
 declare -A TASK_ROLLOUT_AFTER_SUCCESS=(
     [one_leg]=200
-    [round_table]=50
+    [round_table]=100
     [lamp]=20
 )
 
 COLLECT_N_ENVS=4
-COLLECT_N_ROLLOUTS=212  # 跑多少条数据,一般设置为 需要的数据量 / policy 成功率
+COLLECT_N_ROLLOUTS=100  # 目标成功 rollout 数量，不表示总共跑多少个 rollout。成功率不为 100% 时实际会多跑
 COLLECT_IF_EXISTS="append"
 COLLECT_ACTION_TYPE="pos"
 COLLECT_OBSERVATION_SPACE="image"
 COLLECT_RANDOMNESS="low"
 COLLECT_ANNOTATE_SKILL=true  # 是否收集 skill 标注
-COLLECT_GUIDANCE_POINT_ON_IMAGE=false  # 是否加 2d guidance point 到图片上
+COLLECT_GUIDANCE_POINT_ON_IMAGE=true  # 是否加 2d guidance point 到图片上
 COLLECT_SKILL_ON_IMAGE=false  # 是否把 skill 标注到图片上,只影响输出的视频
-COLLECT_GUIDANCE_POINT_COLORED=false  # 是否使用彩色引导点 (yellow=pick/screw, red=place/push/insert)
+COLLECT_GUIDANCE_POINT_COLORED=true  # 是否使用彩色引导点 (yellow=pick/screw, red=place/push/insert)
 COLLECT_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # 等比例配置数据
@@ -799,7 +799,8 @@ collect_data_step() {
         collect_cmd=(
             python -m src.eval.evaluate_model
             --n-envs "$COLLECT_N_ENVS"
-            --n-rollouts "$COLLECT_N_ROLLOUTS"
+            --n-rollouts "$COLLECT_N_ENVS"
+            --target-successes "$COLLECT_N_ROLLOUTS"
             -f "$task"
             --if-exists "$COLLECT_IF_EXISTS"
             --max-rollout-steps "$max_rollout_steps"
