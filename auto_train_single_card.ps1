@@ -40,10 +40,13 @@ if ($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") {
     } else {
         $global:DATA_SUFFIX = "rgbd-skill"
     }
+    $global:DATA_SUFFIX_FALLBACK = ""
 } elseif ($global:DATA_ANNOTATE_SKILL_ONE_HOT -eq "true") {
     $global:DATA_SUFFIX = "rgbd-only-skill"
+    $global:DATA_SUFFIX_FALLBACK = ""
 } else {
     $global:DATA_SUFFIX = "rgbd"
+    $global:DATA_SUFFIX_FALLBACK = "rgbd-only-skill"  # rgbd 数据集不存在时 fallback 到 rgbd-only-skill
 }
 
 # 单卡训练命令
@@ -59,6 +62,7 @@ $global:TRAIN_COMMAND_PARTS = @(
     "data.suffix=$global:DATA_SUFFIX",
     "data.annotate_guidance_point=$global:DATA_ANNOTATE_GUIDANCE_POINT",
     "data.annotate_skill_one_hot=$global:DATA_ANNOTATE_SKILL_ONE_HOT",
+    "data.suffix_fallback=$global:DATA_SUFFIX_FALLBACK",
     "data.storage_format=$global:DATA_STORAGE_FORMAT",
     "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
     "data.dataloader_workers=4",

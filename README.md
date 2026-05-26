@@ -30,7 +30,7 @@ Simple helper scripts for checking ZJU GPU servers, starting single-card or mult
 PowerShell:
 
 ```powershell
-.\check_zju_4090.ps1
+.\check_zju_gpu.ps1
 .\auto_train_single_card.ps1
 .\auto_train_multi_card.ps1
 .\cleanup_auto_train_sessions.ps1
@@ -39,7 +39,7 @@ PowerShell:
 Bash:
 
 ```bash
-./check_zju_4090.sh
+./check_zju_gpu.sh
 ./auto_train_single_card.sh
 ./auto_train_multi_card.sh
 ./cleanup_auto_train_sessions.sh

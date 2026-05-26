@@ -38,10 +38,13 @@ if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
     else
         DATA_SUFFIX="rgbd-skill"
     fi
+    DATA_SUFFIX_FALLBACK=""
 elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
     DATA_SUFFIX="rgbd-only-skill"
+    DATA_SUFFIX_FALLBACK=""
 else
     DATA_SUFFIX="rgbd"
+    DATA_SUFFIX_FALLBACK="rgbd-only-skill"  # rgbd 数据集不存在时 fallback 到 rgbd-only-skill
 fi
 
 # Multi-card training command.
@@ -54,13 +57,14 @@ TRAIN_COMMAND_PARTS=(
     +experiment=rgbd/dit  # diff_unet, dit, fmt
     # vision_encoder=resnet
     # vision_encoder.pretrained=false
-    "task=round_table"  # [one_leg, round_table, lamp]
+    "task=[one_leg, round_table, lamp]"  # [one_leg, round_table, lamp]
     data.demo_source=rollout
-    data.data_subset=200
+    data.data_subset=100
     data.demo_outcome=success
     "data.suffix=${DATA_SUFFIX}"
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
     "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
+    "data.suffix_fallback=${DATA_SUFFIX_FALLBACK}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     data.dataloader_workers=4
@@ -68,7 +72,7 @@ TRAIN_COMMAND_PARTS=(
     training.num_epochs=3000
     training.steps_per_epoch=100
     training.save_per_epoch=500
-    wandb.project=multi-task-rgbd-skill-low-0428
+    wandb.project=multi-task-rgbd-skill-low-0526
     wandb.mode=online
     randomness=low
     dryrun=false
@@ -80,9 +84,9 @@ fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
-SSH_NAME="240"
+SSH_NAME="230"
 NUM_GPUS="2"
-GPU_ID="2,3"
+GPU_ID=""
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
 # DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236 & 238
 FAST_SERVER=(236 230)

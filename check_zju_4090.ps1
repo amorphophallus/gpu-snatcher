@@ -1,1 +1,0 @@
-check_zju_gpu.ps1

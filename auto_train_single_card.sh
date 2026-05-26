@@ -38,10 +38,13 @@ if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
     else
         DATA_SUFFIX="rgbd-skill"
     fi
+    DATA_SUFFIX_FALLBACK=""
 elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
     DATA_SUFFIX="rgbd-only-skill"
+    DATA_SUFFIX_FALLBACK=""
 else
     DATA_SUFFIX="rgbd"
+    DATA_SUFFIX_FALLBACK="rgbd-only-skill"  # rgbd 数据集不存在时 fallback 到 rgbd-only-skill
 fi
 
 # Single-card training command.
@@ -57,6 +60,7 @@ TRAIN_COMMAND_PARTS=(
     "data.suffix=${DATA_SUFFIX}"
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
     "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
+    "data.suffix_fallback=${DATA_SUFFIX_FALLBACK}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     data.dataloader_workers=4
