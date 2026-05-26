@@ -155,25 +155,31 @@ run_with_retry() {
     local description="$3"
     shift 3
 
-    local attempt exit_code
+    local attempt exit_code stderr_file stderr_output
+
+    stderr_file="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f -- '$stderr_file'" RETURN
 
     attempt=1
     while (( attempt <= max_retries )); do
         log_info "${description} (attempt ${attempt}/${max_retries})"
-        if "$@"; then
+        if "$@" 2>"$stderr_file"; then
             if (( attempt > 1 )); then
                 log_info "${description} succeeded on attempt ${attempt}/${max_retries}"
             fi
             return 0
         else
             exit_code=$?
+            stderr_output="$(< "$stderr_file")"
+            : > "$stderr_file"
         fi
         if (( attempt == max_retries )); then
-            log_error "${description} failed on attempt ${attempt}/${max_retries} with exit code ${exit_code}"
+            log_error "${description} failed on attempt ${attempt}/${max_retries} with exit code ${exit_code}: ${stderr_output}"
             return "$exit_code"
         fi
 
-        log_info "${description} failed on attempt ${attempt}/${max_retries} with exit code ${exit_code}; retrying in ${retry_delay_seconds}s"
+        log_info "${description} failed on attempt ${attempt}/${max_retries} with exit code ${exit_code}: ${stderr_output}; retrying in ${retry_delay_seconds}s"
         sleep "$retry_delay_seconds"
         ((attempt++))
     done
@@ -374,18 +380,6 @@ build_remote_mkdir_cmd() {
     fi
 }
 
-build_remote_probe_cmd() {
-    local remote_base_dir="$1"
-
-    if [[ "$remote_base_dir" == "~" ]]; then
-        printf '%s\n' "command -v rsync >/dev/null 2>&1 && test -d ~ && test -w ~"
-    elif [[ "$remote_base_dir" == "~/"* ]]; then
-        printf '%s\n' "command -v rsync >/dev/null 2>&1 && test -d ~/${remote_base_dir#~/} && test -w ~/${remote_base_dir#~/}"
-    else
-        printf 'command -v rsync >/dev/null 2>&1 && test -d %q && test -w %q\n' "$remote_base_dir" "$remote_base_dir"
-    fi
-}
-
 collect_data_step() {
     local local_root="$1"
     local task checkpoint_path max_rollout_steps rollout_after_success
@@ -503,22 +497,19 @@ upload_step() {
     local local_root="$1"
     local task task_upload_dir remote_task_dir remote_ssh_host sanitized_ld_library_path
     local ssh_bin rsync_bin
-    local remote_mkdir_cmd remote_probe_cmd
+    local remote_mkdir_cmd
     local rsync_ssh_cmd
-    local uploaded_any remote_prerequisites_checked
+    local uploaded_any
     local -a ssh_common_args=()
     local -a ssh_mkdir_cmd
-    local -a ssh_probe_cmd
     local -a rsync_upload_cmd
 
     sanitized_ld_library_path="$(sanitize_ld_library_path "${LD_LIBRARY_PATH:-}")"
     remote_ssh_host=""
     ssh_bin=""
     rsync_bin=""
-    remote_probe_cmd=""
     rsync_ssh_cmd=""
     uploaded_any=false
-    remote_prerequisites_checked=false
 
     for task in "${TASKS[@]}"; do
         task_upload_dir="$(get_task_upload_absolute_dir "$local_root" "$task")"
@@ -552,26 +543,6 @@ upload_step() {
                 -o IPQoS=throughput
             )
             rsync_ssh_cmd="$(quote_command "$ssh_bin" "${ssh_common_args[@]}")"
-            remote_probe_cmd="$(build_remote_probe_cmd "${REMOTE_PATH%/}")"
-        fi
-
-        if [[ "$remote_prerequisites_checked" != true ]]; then
-            ssh_probe_cmd=(
-                env
-                "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
-                "$ssh_bin"
-                "${ssh_common_args[@]}"
-                "$remote_ssh_host"
-                "$remote_probe_cmd"
-            )
-
-            run_with_retry \
-                "$UPLOAD_MAX_RETRIES" \
-                "$UPLOAD_RETRY_DELAY_SECONDS" \
-                "Checking remote upload prerequisites on ${remote_ssh_host}" \
-                "${ssh_probe_cmd[@]}"
-
-            remote_prerequisites_checked=true
         fi
 
         remote_mkdir_cmd="$(build_remote_mkdir_cmd "$remote_task_dir")"
