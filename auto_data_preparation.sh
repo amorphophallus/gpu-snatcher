@@ -669,11 +669,14 @@ upload_large_file_in_parts() {
         "$remote_ssh_host"
         "$remote_setup_cmd"
     )
-    run_with_retry \
+    if ! run_with_retry \
         "$UPLOAD_MAX_RETRIES" \
         "$UPLOAD_RETRY_DELAY_SECONDS" \
         "Ensuring remote split upload staging exists for ${relative_path}" \
-        "${ssh_setup_cmd[@]}"
+        "${ssh_setup_cmd[@]}"; then
+        log_error "Failed to create remote split upload staging directory, aborting split upload for ${relative_path}"
+        return 1
+    fi
 
     active_jobs=0
     for (( part_number = 1; part_number <= total_parts; part_number++ )); do
