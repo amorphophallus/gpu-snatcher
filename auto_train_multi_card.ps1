@@ -116,7 +116,7 @@ $global:SSH_NAME = "240"
 $global:NUM_GPUs = 2
 $global:GPU_ID = "1,3"
 $global:FAST_SERVER = @("236", "230")
-$global:SLOW_SERVER = @("228", "238", "240")
+$global:SLOW_SERVER = @("228", "238", "240", "221", "251", "181", "183")
 $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
 # $global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
@@ -205,7 +205,7 @@ function Get-ZjuHostsFromSshConfig {
 
         if ($trimmed -match '^(?i)Host\s+(.+)$') {
             foreach ($pattern in ($Matches[1] -split '\s+')) {
-                if ($pattern -match '^zju_4090_' -and $pattern -notmatch '[*?]') {
+                if ($pattern -match '^zju_' -and $pattern -notmatch '[*?]') {
                     if ($seen.Add($pattern)) {
                         $result.Add($pattern)
                     }
@@ -229,11 +229,29 @@ function Resolve-HostAlias {
         return ''
     }
 
-    if ($trimmed -match '^zju_4090_') {
+    if ($trimmed -match '^zju_') {
         return $trimmed
     }
 
     if ($trimmed -match '^\d+$') {
+        $found = ''
+        if (Test-Path $SshConfigPath) {
+            $lines = Get-Content -Path $SshConfigPath -ErrorAction SilentlyContinue
+            foreach ($line in $lines) {
+                if ($line -match '^\s*Host\s+(.+)$') {
+                    foreach ($pattern in ($Matches[1] -split '\s+')) {
+                        if ($pattern -match '^zju_' -and $pattern -match "${trimmed}$" -and $pattern -notmatch '[*?]') {
+                            $found = $pattern
+                            break
+                        }
+                    }
+                }
+                if ($found) { break }
+            }
+        }
+        if ($found) {
+            return $found
+        }
         return "zju_4090_$trimmed"
     }
 

@@ -39,7 +39,7 @@ function Get-ZjuHostsFromSshConfig {
 
         if ($trimmed -match '^(?i)Host\s+(.+)$') {
             foreach ($pattern in ($Matches[1] -split '\s+')) {
-                if ($pattern -like 'zju_4090_*' -and $pattern -notmatch '[*?]') {
+                if ($pattern -like 'zju_*' -and $pattern -notmatch '[*?]') {
                     if ($seen.Add($pattern)) {
                         $result.Add($pattern)
                     }

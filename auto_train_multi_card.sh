@@ -86,7 +86,7 @@ GPU_ID="2,3"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
 # DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236 & 238
 FAST_SERVER=(236 230)
-SLOW_SERVER=(228 238 240)
+SLOW_SERVER=(228 238 240 221 251 181 183)
 
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-0.1}"
@@ -131,7 +131,7 @@ get_hosts_from_ssh_config() {
         /^[[:space:]]*#/ { next }
         /^[[:space:]]*Host[[:space:]]+/ {
             for (i = 2; i <= NF; i++) {
-                if ($i ~ /^zju_4090_/ && $i !~ /[*?]/) {
+                if ($i ~ /^zju_/ && $i !~ /[*?]/) {
                     print $i
                 }
             }
@@ -145,10 +145,25 @@ normalize_ssh_host() {
 
     if [[ -z "$host" ]]; then
         printf '%s\n' ""
-    elif [[ "$host" =~ ^zju_4090_ ]]; then
+    elif [[ "$host" =~ ^zju_ ]]; then
         printf '%s\n' "$host"
     elif [[ "$host" =~ ^[0-9]+$ ]]; then
-        printf 'zju_4090_%s\n' "$host"
+        local found
+        found=$(awk '
+            BEGIN { IGNORECASE = 1 }
+            /^[[:space:]]*Host[[:space:]]+/ {
+                for (i = 2; i <= NF; i++) {
+                    if ($i ~ /^zju_/ && $i ~ /'"$host"'$/ && $i !~ /[*?]/) {
+                        print $i; exit
+                    }
+                }
+            }
+        ' "$SSH_CONFIG_PATH" 2>/dev/null)
+        if [[ -n "$found" ]]; then
+            printf '%s\n' "$found"
+        else
+            printf 'zju_4090_%s\n' "$host"
+        fi
     else
         printf '%s\n' "$host"
     fi

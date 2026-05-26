@@ -31,7 +31,7 @@ get_hosts_from_ssh_config() {
         /^[[:space:]]*#/ { next }
         /^[[:space:]]*Host[[:space:]]+/ {
             for (i = 2; i <= NF; i++) {
-                if ($i ~ /^zju_4090_/ && $i !~ /[*?]/) {
+                if ($i ~ /^zju_/ && $i !~ /[*?]/) {
                     print $i
                 }
             }

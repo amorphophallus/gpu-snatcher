@@ -19,6 +19,7 @@ REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 REMOTE_SSH_HOST="232"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
+SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 UPLOAD_MAX_RETRIES=5
 UPLOAD_RETRY_DELAY_SECONDS=5
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
@@ -63,7 +64,7 @@ COLLECT_RANDOMNESS="low"
 COLLECT_ANNOTATE_SKILL=true  # 是否收集 skill 标注
 COLLECT_GUIDANCE_POINT_ON_IMAGE=true  # 是否加 2d guidance point 到图片上
 COLLECT_SKILL_ON_IMAGE=false  # 是否把 skill 标注到图片上,只影响输出的视频
-COLLECT_GUIDANCE_POINT_COLORED=true  # 是否使用彩色引导点 (yellow=pick/screw, red=place/push/insert)
+COLLECT_GUIDANCE_POINT_COLORED=false  # 是否使用彩色引导点 (yellow=pick/screw, red=place/push/insert)
 COLLECT_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # 等比例配置数据
@@ -223,8 +224,25 @@ normalize_remote_ssh_host() {
 
     if [[ -z "$host" ]]; then
         printf '%s\n' ""
+    elif [[ "$host" =~ ^zju_ ]]; then
+        printf '%s\n' "$host"
     elif [[ "$host" =~ ^[0-9]+$ ]]; then
-        printf 'zju_4090_%s\n' "$host"
+        local found
+        found=$(awk '
+            BEGIN { IGNORECASE = 1 }
+            /^[[:space:]]*Host[[:space:]]+/ {
+                for (i = 2; i <= NF; i++) {
+                    if ($i ~ /^zju_/ && $i ~ /'"$host"'$/ && $i !~ /[*?]/) {
+                        print $i; exit
+                    }
+                }
+            }
+        ' "$SSH_CONFIG_PATH" 2>/dev/null)
+        if [[ -n "$found" ]]; then
+            printf '%s\n' "$found"
+        else
+            printf 'zju_4090_%s\n' "$host"
+        fi
     else
         printf '%s\n' "$host"
     fi

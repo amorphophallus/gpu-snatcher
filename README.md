@@ -1,11 +1,11 @@
 # gpu-snatcher
 
-Simple helper scripts for checking ZJU 4090 servers, starting single-card or multi-card training jobs automatically, preparing datasets, and pulling the latest evaluation checkpoint for local eval.
+Simple helper scripts for checking ZJU GPU servers, starting single-card or multi-card training jobs automatically, preparing datasets, and pulling the latest evaluation checkpoint for local eval.
 
 ## Scripts
 
-- `check_zju_4090.ps1` / `check_zju_4090.sh`
-  Check whether each `zju_4090_*` server is reachable and which GPUs are free. A GPU is treated as available when memory usage is below 10%.
+- `check_zju_gpu.ps1` / `check_zju_gpu.sh`
+  Check whether each `zju_*` server is reachable and which GPUs are free. A GPU is treated as available when memory usage is below 10%.
 
 - `auto_train_single_card.ps1` / `auto_train_single_card.sh`
   Find one free GPU, replace `training.gpu_id=` in `TRAIN_COMMAND`, start the command in a remote `tmux` session, and return structured status. Both the PowerShell and Bash scripts expose switchable `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, and optional `DATA_PATHS_OVERRIDE` globals for LMDB/Zarr dataset selection.

@@ -27,6 +27,7 @@ CONDA_ENV="rr"
 CHECKPOINT_PATTERN="*last*.pt"  # last=整个训练最后一个，latest=每500个epoch保存的最新一个
 GPU_ID=0
 CONNECT_TIMEOUT_SECONDS=10
+SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 EVAL_ANNOTATE_SKILL=false  # disabled for state-based RPPO eval
 EVAL_GUIDANCE_POINT_ON_IMAGE=false
 EVAL_SKILL_ON_IMAGE=false
@@ -122,8 +123,25 @@ normalize_remote_ssh_host() {
 
     if [[ -z "$host" ]]; then
         printf '%s\n' ""
+    elif [[ "$host" =~ ^zju_ ]]; then
+        printf '%s\n' "$host"
     elif [[ "$host" =~ ^[0-9]+$ ]]; then
-        printf 'zju_4090_%s\n' "$host"
+        local found
+        found=$(awk '
+            BEGIN { IGNORECASE = 1 }
+            /^[[:space:]]*Host[[:space:]]+/ {
+                for (i = 2; i <= NF; i++) {
+                    if ($i ~ /^zju_/ && $i ~ /'"$host"'$/ && $i !~ /[*?]/) {
+                        print $i; exit
+                    }
+                }
+            }
+        ' "$SSH_CONFIG_PATH" 2>/dev/null)
+        if [[ -n "$found" ]]; then
+            printf '%s\n' "$found"
+        else
+            printf 'zju_4090_%s\n' "$host"
+        fi
     else
         printf '%s\n' "$host"
     fi

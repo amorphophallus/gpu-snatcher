@@ -19,6 +19,7 @@ REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
 REMOTE_SSH_HOST="228"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
+SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 UPLOAD_MAX_RETRIES=5
 UPLOAD_RETRY_DELAY_SECONDS=5
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
@@ -193,8 +194,25 @@ normalize_remote_ssh_host() {
 
     if [[ -z "$host" ]]; then
         printf '%s\n' ""
+    elif [[ "$host" =~ ^zju_ ]]; then
+        printf '%s\n' "$host"
     elif [[ "$host" =~ ^[0-9]+$ ]]; then
-        printf 'zju_4090_%s\n' "$host"
+        local found
+        found=$(awk '
+            BEGIN { IGNORECASE = 1 }
+            /^[[:space:]]*Host[[:space:]]+/ {
+                for (i = 2; i <= NF; i++) {
+                    if ($i ~ /^zju_/ && $i ~ /'"$host"'$/ && $i !~ /[*?]/) {
+                        print $i; exit
+                    }
+                }
+            }
+        ' "$SSH_CONFIG_PATH" 2>/dev/null)
+        if [[ -n "$found" ]]; then
+            printf '%s\n' "$found"
+        else
+            printf 'zju_4090_%s\n' "$host"
+        fi
     else
         printf '%s\n' "$host"
     fi
