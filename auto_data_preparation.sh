@@ -654,7 +654,7 @@ upload_large_file_in_parts() {
     log_info "Uploading large file in ${total_parts} parts: ${relative_path} (${source_file_size} bytes, ${PART_SIZE_BYTES} bytes per part, ${PARALLEL_UPLOAD_WORKERS} workers)"
 
     mkdir -p "$local_temp_root"
-    remote_setup_cmd="$(build_remote_mkdir_cmd "$remote_parent_dir") && $(build_remote_mkdir_cmd "$remote_staging_dir")"
+    remote_setup_cmd="$(build_remote_mkdir_cmd "$remote_parent_dir") && $(build_remote_mkdir_cmd "$remote_staging_dir") && test -d $(format_remote_shell_value "$remote_staging_dir")"
     ssh_setup_cmd=(
         env
         "LD_LIBRARY_PATH=${sanitized_ld_library_path}"
