@@ -86,6 +86,7 @@ WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
 SSH_NAME="230"
 GPU_ID="0"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
+RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/data/hy/tmp}"
 DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)
@@ -489,7 +490,7 @@ start_remote_training() {
 
     run_ssh \
         "$host_alias" \
-        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" <<'REMOTE'
+        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" "$RUNTIME_TMP_ROOT" <<'REMOTE'
 set -euo pipefail
 
 session_name="$1"
@@ -498,6 +499,7 @@ conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
 wandb_project_name="${6:-project}"
+runtime_tmp_root="${7:-/data/hy/tmp}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 expand_path() {
@@ -530,7 +532,7 @@ wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za
 if [[ -z "$wandb_project_slug" ]]; then
     wandb_project_slug="project"
 fi
-runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+runtime_tmp_dir="${runtime_tmp_root}/wandb-${wandb_project_slug}"
 wandb_cache_dir="${runtime_tmp_dir}/cache"
 wandb_config_dir="${runtime_tmp_dir}/config"
 wandb_data_dir="${runtime_tmp_dir}/data"

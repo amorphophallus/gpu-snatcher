@@ -13,10 +13,10 @@ STEPS=(
 
 # LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
 LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
-# REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
-REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
+REMOTE_PATH="/data/hy/robust-rearrangement-custom/"  # server local
+# REMOTE_PATH="~/robust-rearrangement-custom/"  # server local home, for 236
 # REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"  # NAS
-REMOTE_SSH_HOST="232"
+REMOTE_SSH_HOST="251"
 CONDA_ENV="rr"
 CONNECT_TIMEOUT_SECONDS=10
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
@@ -122,7 +122,8 @@ else
 fi
 PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
 PROCESS_BATCH_SIZE=2
-PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${TMPDIR:-/tmp}/gpu-snatcher-auto-data-preparation}"
+RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/data/hy/tmp}"
+PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${RUNTIME_TMP_ROOT}/gpu-snatcher-auto-data-preparation}"
 
 PROCESS_FLAGS=(
     --overwrite
@@ -648,7 +649,7 @@ upload_large_file_in_parts() {
     remote_final_file="$(get_remote_dataset_file_path "$remote_dataset_dir" "$relative_path")"
     remote_parent_dir="$(get_remote_dataset_parent_dir "$remote_dataset_dir" "$relative_path")"
     split_key="$(sanitize_split_upload_key "${relative_path}-${source_file_size}-${PART_SIZE_BYTES}")"
-    local_temp_root="${TMPDIR:-/tmp}/gpu-snatcher-split-upload/${split_key}"
+    local_temp_root="${RUNTIME_TMP_ROOT}/gpu-snatcher-split-upload/${split_key}"
     remote_staging_dir="${remote_dataset_dir%/}/.split-upload-${split_key}.parts"
 
     log_info "Uploading large file in ${total_parts} parts: ${relative_path} (${source_file_size} bytes, ${PART_SIZE_BYTES} bytes per part, ${PARALLEL_UPLOAD_WORKERS} workers)"

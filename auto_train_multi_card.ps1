@@ -122,6 +122,7 @@ $global:GPU_ID = "1,3"
 $global:FAST_SERVER = @("236", "230")
 $global:SLOW_SERVER = @("228", "238", "240", "221", "251", "181", "183")
 $global:DATA_DIR_PROCESSED = "/data/hy/robust-rearrangement-custom/data/"  # server local
+$global:RUNTIME_TMP_ROOT = if ($env:RUNTIME_TMP_ROOT) { $env:RUNTIME_TMP_ROOT } else { "/data/hy/tmp" }
 # $global:DATA_DIR_PROCESSED = "~/robust-rearrangement-custom/data/"  # home, for 236
 $sessionNameCandidates = @(
     "atlas",
@@ -741,7 +742,8 @@ function Start-RemoteTraining {
         [string]$SessionName,
         [string]$PreparedCommand,
         [string]$DataDirProcessed,
-        [string]$WandbProjectName
+        [string]$WandbProjectName,
+        [string]$RuntimeTmpRoot
     )
 
     $remoteScript = @'
@@ -753,6 +755,7 @@ conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
 wandb_project_name="${6:-project}"
+runtime_tmp_root="${7:-/data/hy/tmp}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 expand_path() {
@@ -785,7 +788,7 @@ wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za
 if [[ -z "$wandb_project_slug" ]]; then
     wandb_project_slug="project"
 fi
-runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+runtime_tmp_dir="${runtime_tmp_root}/wandb-${wandb_project_slug}"
 wandb_cache_dir="${runtime_tmp_dir}/cache"
 wandb_config_dir="${runtime_tmp_dir}/config"
 wandb_data_dir="${runtime_tmp_dir}/data"
@@ -819,7 +822,8 @@ tmux kill-window -t "${session_name}:0" >/dev/null 2>&1 || true
         $RemoteCondaEnv,
         ([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($PreparedCommand))),
         $DataDirProcessed,
-        $WandbProjectName
+        $WandbProjectName,
+        $RuntimeTmpRoot
     )
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -980,7 +984,7 @@ $gpuIdsCsv = $selection.GpuIds -join ','
 $preparedCommand = Prepare-TrainCommand -NumGpus $requestedGpuCount -GpuIdsCsv $gpuIdsCsv
 $commandName = Get-CommandName -Command $preparedCommand
 $sessionName = Get-AvailableTmuxSessionName -HostAlias $selection.HostAlias
-$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED -WandbProjectName $WANDB_PROJECT_NAME
+$startResult = Start-RemoteTraining -HostAlias $selection.HostAlias -SessionName $sessionName -PreparedCommand $preparedCommand -DataDirProcessed $DATA_DIR_PROCESSED -WandbProjectName $WANDB_PROJECT_NAME -RuntimeTmpRoot $RUNTIME_TMP_ROOT
 
 if ($startResult.ExitCode -ne 0) {
     [Console]::Error.WriteLine("Failed to start tmux session '$sessionName' on $($selection.HostAlias).")

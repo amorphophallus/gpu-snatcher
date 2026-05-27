@@ -31,7 +31,7 @@ DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
 DATA_ANNOTATE_GUIDANCE_POINT="true"  # 是否在 rgb 图像上标注引导点
 DATA_ANNOTATE_SKILL_ONE_HOT="false"  # 是否给模型输入 one-hot skill 向量
-DATA_GUIDANCE_POINT_COLORED="true"  # yellow=pick/screw, red=place/push/insert
+DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
 if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
     if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
         DATA_SUFFIX="rgbd-skill-colored"
@@ -64,7 +64,6 @@ TRAIN_COMMAND_PARTS=(
     "data.suffix=${DATA_SUFFIX}"
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
     "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
-    "data.suffix_fallback=${DATA_SUFFIX_FALLBACK}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     data.dataloader_workers=4
@@ -78,16 +77,20 @@ TRAIN_COMMAND_PARTS=(
     dryrun=false
     data.ddp_shard_enabled=true
 )
+if [[ -n "${DATA_SUFFIX_FALLBACK// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("data.suffix_fallback=${DATA_SUFFIX_FALLBACK}")
+fi
 if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
     TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
 fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
-SSH_NAME="230"
+SSH_NAME="251"
 NUM_GPUS="2"
 GPU_ID=""
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
+RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/data/hy/tmp}"  # 注意这个目录是否存在
 # DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236 & 238
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)
@@ -669,7 +672,7 @@ start_remote_training() {
 
     run_ssh \
         "$host_alias" \
-        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" <<'REMOTE'
+        bash -s -- "$session_name" "$REMOTE_PROJECT_DIR" "$REMOTE_CONDA_ENV" "$encoded_command" "$DATA_DIR_PROCESSED" "$WANDB_PROJECT_NAME" "$RUNTIME_TMP_ROOT" <<'REMOTE'
 set -euo pipefail
 
 session_name="$1"
@@ -678,6 +681,7 @@ conda_env="$3"
 encoded_train_command="$4"
 data_dir_processed="${5:-}"
 wandb_project_name="${6:-project}"
+runtime_tmp_root="${7:-/data/hy/tmp}"
 train_command="$(printf '%s' "$encoded_train_command" | base64 -d)"
 
 expand_path() {
@@ -710,7 +714,7 @@ wandb_project_slug="$(printf '%s' "${wandb_project_name:-project}" | tr -c 'A-Za
 if [[ -z "$wandb_project_slug" ]]; then
     wandb_project_slug="project"
 fi
-runtime_tmp_dir="/tmp/wandb-${wandb_project_slug}"
+runtime_tmp_dir="${runtime_tmp_root}/wandb-${wandb_project_slug}"
 wandb_cache_dir="${runtime_tmp_dir}/cache"
 wandb_config_dir="${runtime_tmp_dir}/config"
 wandb_data_dir="${runtime_tmp_dir}/data"
