@@ -4,23 +4,22 @@ set -euo pipefail
 
 # Comment out a line to skip that step.
 STEPS=(
-    # download
     eval
 )
 
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
 DATA_DIR_RAW="${DATA_DIR_RAW:-/mnt/nas/share/home/hy/robust-rearrangement-custom/data}"
 REMOTE_SSH_HOST="228"
-RUN_ID="gentle-fog-7"
+RUN_ID="lively-wind-5"
 #LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
 LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
-TASK="round_table"
-PROJECT="rgbd-colored-guidance-point"
+TASK="one_leg+round_table+lamp"  # 多任务用 + 号隔开
+PROJECT="multi-task-rgbd-skill-low-0526"
 MODEL_ARCH="dit"
-NUM_DATA="200"
+NUM_DATA="100"
 EPOCH=""
 N_ENVS=3
-N_ROLLOUTS=12
+N_ROLLOUTS=24
 VISUALIZE=false
 DEBUG=false
 CONDA_ENV="rr"
@@ -28,25 +27,25 @@ CHECKPOINT_PATTERN="*last*.pt"  # last=整个训练最后一个，latest=每500�
 GPU_ID=0
 CONNECT_TIMEOUT_SECONDS=10
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
-EVAL_ANNOTATE_SKILL=false  # disabled for state-based RPPO eval
-EVAL_GUIDANCE_POINT_ON_IMAGE=false
-EVAL_SKILL_ON_IMAGE=false
-EVAL_GUIDANCE_POINT_COLORED=false
+EVAL_ANNOTATE_SKILL=true
+EVAL_GUIDANCE_POINT_ON_IMAGE=true
+EVAL_SKILL_ON_IMAGE=true
+EVAL_GUIDANCE_POINT_COLORED=true
 EVAL_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
 ROLLOUT_SUFFIX_MODEL_NAME=""
-OVERWRITE_WT_PATH="/home/huyue/projects/robust-rearrangement-custom/checkpoints/rppo/round_table/low/actor_chkpt.pt"  # 如果设置，直接使用此路径作为 --wt-path，跳过自动拼接和下载步骤
+OVERWRITE_WT_PATH=""  # 如果设置，直接使用此路径作为 --wt-path，跳过自动拼接和下载步骤
 
 PARAMS=(
     --if-exists append
     --max-rollout-steps 1000
     --action-type pos
-    --observation-space state
+    --observation-space image
     --randomness low
     --save-rollouts
     --save-failures
-    # --save-depth-image  # disabled for state-based eval
+    --save-depth-image  # disabled for state-based eval
 )
 if [[ "$EVAL_ANNOTATE_SKILL" == "true" ]]; then
     PARAMS+=(--annotate-skill)
@@ -568,7 +567,7 @@ main() {
     else
         checkpoint_name_tag="$(checkpoint_pattern_to_name_tag "$CHECKPOINT_PATTERN")"
         destination_dir="${local_root}/checkpoints/bc/${TASK}/low"
-        local_checkpoint="${destination_dir}/${PROJECT}_${MODEL_ARCH}_${NUM_DATA}traj_${checkpoint_name_tag}_${EPOCH}.pt"
+        local_checkpoint="${destination_dir}/${PROJECT}_${RUN_ID}_${checkpoint_name_tag}_${EPOCH}.pt"
     fi
 
     rollout_suffix_model_name="$ROLLOUT_SUFFIX_MODEL_NAME"
