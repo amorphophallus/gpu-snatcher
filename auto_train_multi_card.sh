@@ -29,9 +29,11 @@ get_command_part_value() {
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
-DATA_ANNOTATE_GUIDANCE_POINT="false"  # 是否在 rgb 图像上标注引导点
-DATA_ANNOTATE_SKILL_ONE_HOT="false"  # 是否给模型输入 one-hot skill 向量
-DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
+DATA_ANNOTATE_GUIDANCE_POINT="false"  # Exp1
+DATA_ANNOTATE_SKILL_ONE_HOT="false"
+DATA_GUIDANCE_POINT_COLORED="false"
+WANDB_CONTINUE_RUN_ID=""  # 设置 wandb run ID 以从 checkpoint resume
+CHECKPOINT_FALLBACK_DIR="/home/hy/tmp/checkpoint_fallback"  # NAS 断连时 checkpoint 暂存本地
 if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
     if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
         DATA_SUFFIX="rgbd-skill-colored"
@@ -41,7 +43,7 @@ if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
     DATA_SUFFIX_FALLBACK=""
 elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
     DATA_SUFFIX="rgbd-only-skill"
-    DATA_SUFFIX_FALLBACK=""
+    DATA_SUFFIX_FALLBACK="rgbd"
 else
     DATA_SUFFIX="rgbd"
     DATA_SUFFIX_FALLBACK="rgbd-only-skill"  # rgbd 数据集不存在时 fallback 到 rgbd-only-skill
@@ -54,12 +56,11 @@ TRAIN_COMMAND_PARTS=(
     --nproc_per_node=2
     -m
     src.train.bc_ddp
-    +experiment=image/dit  # diff_unet, dit, fmt
-    vision_encoder=resnet  # image 设置时取消注释
-    vision_encoder.pretrained=false  # image 设置时取消注释
+    +experiment=rgbd/dit  # Exp1
+    # vision_encoder=resnet  # image 设置时取消注释
+    # vision_encoder.pretrained=false  # image 设置时取消注释
     "task=[one_leg, round_table, lamp]"  # [one_leg, round_table, lamp]
     data.demo_source=rollout
-    data.data_subset=100
     data.demo_outcome=success
     "data.suffix=${DATA_SUFFIX}"
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
@@ -72,7 +73,7 @@ TRAIN_COMMAND_PARTS=(
     training.num_epochs=3000
     training.steps_per_epoch=100
     training.save_per_epoch=500
-    wandb.project=multi-task-rgbd-skill-low-0526
+    wandb.project=multi-task-rgbd-skill-low-0610
     wandb.mode=online
     randomness=low
     dryrun=false
@@ -81,18 +82,23 @@ TRAIN_COMMAND_PARTS=(
 if [[ -n "${DATA_SUFFIX_FALLBACK// }" ]]; then
     TRAIN_COMMAND_PARTS+=("data.suffix_fallback=${DATA_SUFFIX_FALLBACK}")
 fi
+if [[ -n "${WANDB_CONTINUE_RUN_ID// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("wandb.continue_run_id=${WANDB_CONTINUE_RUN_ID}")
+fi
 if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
     TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
+fi
+if [[ -n "${CHECKPOINT_FALLBACK_DIR// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("training.checkpoint_fallback_dir=${CHECKPOINT_FALLBACK_DIR}")
 fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
-SSH_NAME="243"
+SSH_NAME="228"
 NUM_GPUS="2"
 GPU_ID=""
-# DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
-DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236 & 238
-RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/data/hy/tmp}"  # 注意这个目录是否存在
+DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # 240 home SSD
+RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)
 

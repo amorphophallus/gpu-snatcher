@@ -29,6 +29,7 @@ get_command_part_value() {
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
+CHECKPOINT_FALLBACK_DIR="/home/hy/tmp/checkpoint_fallback"
 DATA_ANNOTATE_GUIDANCE_POINT="true"
 DATA_ANNOTATE_SKILL_ONE_HOT="false"
 DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
@@ -80,13 +81,16 @@ TRAIN_COMMAND_PARTS=(
 if [[ -n "${DATA_PATHS_OVERRIDE// }" ]]; then
     TRAIN_COMMAND_PARTS+=("data.data_paths_override=${DATA_PATHS_OVERRIDE}")
 fi
+if [[ -n "${CHECKPOINT_FALLBACK_DIR// }" ]]; then
+    TRAIN_COMMAND_PARTS+=("training.checkpoint_fallback_dir=${CHECKPOINT_FALLBACK_DIR}")
+fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
 SSH_NAME="230"
 GPU_ID="0"
 DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
-RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/data/hy/tmp}"
+RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
 DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # home, for 236
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)
