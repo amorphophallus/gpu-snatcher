@@ -26,6 +26,58 @@ get_command_part_value() {
     return 1
 }
 
+annotation_die() {
+    printf '[%s] ERROR %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+    exit 1
+}
+
+validate_dataset_annotation_config() {
+    if [[ "$DATA_ANNOTATE_GRASP" == "true" && "$DATA_ANNOTATE_GRASP_PART" == "true" ]]; then
+        annotation_die "DATA_ANNOTATE_GRASP and DATA_ANNOTATE_GRASP_PART cannot both be true"
+    fi
+    if [[ "$DATA_ANNOTATE_GRASP_COLORED" == "true" && "$DATA_ANNOTATE_GRASP" != "true" && "$DATA_ANNOTATE_GRASP_PART" != "true" ]]; then
+        annotation_die "DATA_ANNOTATE_GRASP_COLORED=true requires DATA_ANNOTATE_GRASP=true or DATA_ANNOTATE_GRASP_PART=true"
+    fi
+    if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" && "$DATA_ANNOTATE_GUIDANCE_POINT" != "true" && "$DATA_ANNOTATE_GRASP_PART" != "true" ]]; then
+        annotation_die "DATA_GUIDANCE_POINT_COLORED=true requires DATA_ANNOTATE_GUIDANCE_POINT=true or DATA_ANNOTATE_GRASP_PART=true"
+    fi
+    if [[ "$DATA_ANNOTATE_GRASP_PART" == "true" && "$DATA_GUIDANCE_POINT_COLORED" != "$DATA_ANNOTATE_GRASP_COLORED" ]]; then
+        annotation_die "DATA_ANNOTATE_GRASP_PART=true requires DATA_GUIDANCE_POINT_COLORED and DATA_ANNOTATE_GRASP_COLORED to match"
+    fi
+}
+
+build_data_suffix() {
+    if [[ "$DATA_ANNOTATE_GRASP_PART" == "true" ]]; then
+        if [[ "$DATA_ANNOTATE_GRASP_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-grasp-part-colored\n'
+        else
+            printf 'rgbd-skill-grasp-part\n'
+        fi
+        return
+    fi
+    if [[ "$DATA_ANNOTATE_GRASP" == "true" ]]; then
+        if [[ "$DATA_ANNOTATE_GRASP_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-grasp-colored\n'
+        else
+            printf 'rgbd-skill-grasp\n'
+        fi
+        return
+    fi
+    if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
+        if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-point-colored\n'
+        else
+            printf 'rgbd-skill-point\n'
+        fi
+        return
+    fi
+    if [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
+        printf 'rgbd-only-skill\n'
+        return
+    fi
+    printf 'rgbd\n'
+}
+
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
@@ -33,20 +85,12 @@ CHECKPOINT_FALLBACK_DIR="/home/hy/tmp/checkpoint_fallback"
 DATA_ANNOTATE_GUIDANCE_POINT="true"
 DATA_ANNOTATE_SKILL_ONE_HOT="false"
 DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
-if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
-    if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
-        DATA_SUFFIX="rgbd-skill-colored"
-    else
-        DATA_SUFFIX="rgbd-skill"
-    fi
-    DATA_SUFFIX_FALLBACK=""
-elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
-    DATA_SUFFIX="rgbd-only-skill"
-    DATA_SUFFIX_FALLBACK=""
-else
-    DATA_SUFFIX="rgbd"
-    DATA_SUFFIX_FALLBACK="rgbd-only-skill"  # rgbd 数据集不存在时 fallback 到 rgbd-only-skill
-fi
+DATA_ANNOTATE_GRASP="false"
+DATA_ANNOTATE_GRASP_COLORED="false"
+DATA_ANNOTATE_GRASP_PART="false"
+validate_dataset_annotation_config
+DATA_SUFFIX="$(build_data_suffix)"
+DATA_SUFFIX_FALLBACK=""
 
 # Single-card training command.
 TRAIN_COMMAND_PARTS=(
@@ -60,6 +104,10 @@ TRAIN_COMMAND_PARTS=(
     data.demo_outcome=success
     "data.suffix=${DATA_SUFFIX}"
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
+    "data.annotate_guidance_point_colored=${DATA_GUIDANCE_POINT_COLORED}"
+    "data.annotate_grasp=${DATA_ANNOTATE_GRASP}"
+    "data.annotate_grasp_colored=${DATA_ANNOTATE_GRASP_COLORED}"
+    "data.annotate_grasp_part=${DATA_ANNOTATE_GRASP_PART}"
     "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
     "data.suffix_fallback=${DATA_SUFFIX_FALLBACK}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"

@@ -26,28 +26,72 @@ get_command_part_value() {
     return 1
 }
 
+annotation_die() {
+    printf '[%s] ERROR %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+    exit 1
+}
+
+validate_dataset_annotation_config() {
+    if [[ "$DATA_ANNOTATE_GRASP" == "true" && "$DATA_ANNOTATE_GRASP_PART" == "true" ]]; then
+        annotation_die "DATA_ANNOTATE_GRASP and DATA_ANNOTATE_GRASP_PART cannot both be true"
+    fi
+    if [[ "$DATA_ANNOTATE_GRASP_COLORED" == "true" && "$DATA_ANNOTATE_GRASP" != "true" && "$DATA_ANNOTATE_GRASP_PART" != "true" ]]; then
+        annotation_die "DATA_ANNOTATE_GRASP_COLORED=true requires DATA_ANNOTATE_GRASP=true or DATA_ANNOTATE_GRASP_PART=true"
+    fi
+    if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" && "$DATA_ANNOTATE_GUIDANCE_POINT" != "true" && "$DATA_ANNOTATE_GRASP_PART" != "true" ]]; then
+        annotation_die "DATA_GUIDANCE_POINT_COLORED=true requires DATA_ANNOTATE_GUIDANCE_POINT=true or DATA_ANNOTATE_GRASP_PART=true"
+    fi
+    if [[ "$DATA_ANNOTATE_GRASP_PART" == "true" && "$DATA_GUIDANCE_POINT_COLORED" != "$DATA_ANNOTATE_GRASP_COLORED" ]]; then
+        annotation_die "DATA_ANNOTATE_GRASP_PART=true requires DATA_GUIDANCE_POINT_COLORED and DATA_ANNOTATE_GRASP_COLORED to match"
+    fi
+}
+
+build_data_suffix() {
+    if [[ "$DATA_ANNOTATE_GRASP_PART" == "true" ]]; then
+        if [[ "$DATA_ANNOTATE_GRASP_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-grasp-part-colored\n'
+        else
+            printf 'rgbd-skill-grasp-part\n'
+        fi
+        return
+    fi
+    if [[ "$DATA_ANNOTATE_GRASP" == "true" ]]; then
+        if [[ "$DATA_ANNOTATE_GRASP_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-grasp-colored\n'
+        else
+            printf 'rgbd-skill-grasp\n'
+        fi
+        return
+    fi
+    if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
+        if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-point-colored\n'
+        else
+            printf 'rgbd-skill-point\n'
+        fi
+        return
+    fi
+    if [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
+        printf 'rgbd-only-skill\n'
+        return
+    fi
+    printf 'rgbd\n'
+}
+
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
-DATA_ANNOTATE_GUIDANCE_POINT="false"  # Exp1
-DATA_ANNOTATE_SKILL_ONE_HOT="false"
+DATA_ANNOTATE_GUIDANCE_POINT="false"  # Exp4: rgbd+only skill
+DATA_ANNOTATE_SKILL_ONE_HOT="true"
 DATA_GUIDANCE_POINT_COLORED="false"
+DATA_ANNOTATE_GRASP="false"
+DATA_ANNOTATE_GRASP_COLORED="false"
+DATA_ANNOTATE_GRASP_PART="false"
 WANDB_CONTINUE_RUN_ID=""  # 设置 wandb run ID 以从 checkpoint resume
 CHECKPOINT_FALLBACK_DIR="/home/hy/tmp/checkpoint_fallback"  # NAS 断连时 checkpoint 暂存本地
-if [[ "$DATA_ANNOTATE_GUIDANCE_POINT" == "true" ]]; then
-    if [[ "$DATA_GUIDANCE_POINT_COLORED" == "true" ]]; then
-        DATA_SUFFIX="rgbd-skill-colored"
-    else
-        DATA_SUFFIX="rgbd-skill"
-    fi
-    DATA_SUFFIX_FALLBACK=""
-elif [[ "$DATA_ANNOTATE_SKILL_ONE_HOT" == "true" ]]; then
-    DATA_SUFFIX="rgbd-only-skill"
-    DATA_SUFFIX_FALLBACK="rgbd"
-else
-    DATA_SUFFIX="rgbd"
-    DATA_SUFFIX_FALLBACK="rgbd-only-skill"  # rgbd 数据集不存在时 fallback 到 rgbd-only-skill
-fi
+validate_dataset_annotation_config
+DATA_SUFFIX="$(build_data_suffix)"
+DATA_SUFFIX_FALLBACK=""
 
 # Multi-card training command.
 TRAIN_COMMAND_PARTS=(
@@ -56,7 +100,7 @@ TRAIN_COMMAND_PARTS=(
     --nproc_per_node=2
     -m
     src.train.bc_ddp
-    +experiment=rgbd/dit  # Exp1
+    +experiment=rgbd/dit  # Exp4: rgbd+only skill
     # vision_encoder=resnet  # image 设置时取消注释
     # vision_encoder.pretrained=false  # image 设置时取消注释
     "task=[one_leg, round_table, lamp]"  # [one_leg, round_table, lamp]
@@ -66,6 +110,9 @@ TRAIN_COMMAND_PARTS=(
     "data.annotate_guidance_point=${DATA_ANNOTATE_GUIDANCE_POINT}"
     "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
     "data.annotate_guidance_point_colored=${DATA_GUIDANCE_POINT_COLORED}"
+    "data.annotate_grasp=${DATA_ANNOTATE_GRASP}"
+    "data.annotate_grasp_colored=${DATA_ANNOTATE_GRASP_COLORED}"
+    "data.annotate_grasp_part=${DATA_ANNOTATE_GRASP_PART}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     data.dataloader_workers=4
@@ -94,10 +141,10 @@ fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
-SSH_NAME="228"
+SSH_NAME="243"
 NUM_GPUS="2"
-GPU_ID=""
-DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # 240 home SSD
+GPU_ID="5,6"
+DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # 243 /home NVMe
 RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)

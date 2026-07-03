@@ -10,27 +10,30 @@ STEPS=(
 REMOTE_PATH="/mnt/nas/share/home/hy/robust-rearrangement-custom/"
 DATA_DIR_RAW="${DATA_DIR_RAW:-/mnt/nas/share/home/hy/robust-rearrangement-custom/data}"
 REMOTE_SSH_HOST="228"
-RUN_ID="lively-wind-5"
+RUN_ID="fiery-snowball-4"
 #LOCAL_PATH="/data/hy/robust-rearrangement"  # 218
 LOCAL_PATH="~/projects/robust-rearrangement-custom"  # base
-TASK="one_leg+round_table+lamp"  # 多任务用 + 号隔开
-PROJECT="multi-task-rgbd-skill-low-0526"
+TASK="round_table"  # 多任务用 + 号隔开
+PROJECT="multi-task-rgbd-skill-low-0428"
 MODEL_ARCH="dit"
 NUM_DATA="100"
 EPOCH=""
 N_ENVS=3
-N_ROLLOUTS=24
+N_ROLLOUTS=12
 VISUALIZE=false
 DEBUG=false
 CONDA_ENV="rr"
-CHECKPOINT_PATTERN="*last*.pt"  # last=整个训练最后一个，latest=每500个epoch保存的最新一个
+CHECKPOINT_PATTERN="*last*.pt"
 GPU_ID=0
 CONNECT_TIMEOUT_SECONDS=10
 SSH_CONFIG_PATH="${SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 EVAL_ANNOTATE_SKILL=true
-EVAL_GUIDANCE_POINT_ON_IMAGE=true
-EVAL_SKILL_ON_IMAGE=true
-EVAL_GUIDANCE_POINT_COLORED=true
+EVAL_GUIDANCE_POINT_ON_IMAGE=false
+EVAL_GRASP_ANNOTATION_ON_IMAGE=false
+EVAL_GRASP_PART_ANNOTATE=false
+EVAL_SKILL_ON_IMAGE=false
+EVAL_GUIDANCE_POINT_COLORED=false
+EVAL_GRASP_ANNOTATION_COLORED=false
 EVAL_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
@@ -42,7 +45,7 @@ PARAMS=(
     --max-rollout-steps 1000
     --action-type pos
     --observation-space image
-    --randomness low
+    --randomness med
     --save-rollouts
     --save-failures
     --save-depth-image  # disabled for state-based eval
@@ -53,8 +56,17 @@ fi
 if [[ "$EVAL_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
     PARAMS+=(--guidance-point-on-image)
 fi
+if [[ "$EVAL_GRASP_ANNOTATION_ON_IMAGE" == "true" ]]; then
+    PARAMS+=(--grasp-annotation-on-image)
+fi
+if [[ "$EVAL_GRASP_PART_ANNOTATE" == "true" ]]; then
+    PARAMS+=(--grasp-part-annotate)
+fi
 if [[ "$EVAL_GUIDANCE_POINT_COLORED" == "true" ]]; then
     PARAMS+=(--guidance-point-colored)
+fi
+if [[ "$EVAL_GRASP_ANNOTATION_COLORED" == "true" ]]; then
+    PARAMS+=(--grasp-annotation-colored)
 fi
 if [[ "$EVAL_ANNOTATE_SKILL" == "true" && "$EVAL_SKILL_ON_IMAGE" == "true" ]]; then
     PARAMS+=(--skill-on-image)
@@ -74,6 +86,24 @@ log_error() {
 die() {
     log_error "$*"
     exit 1
+}
+
+validate_annotation_flags() {
+    if [[ "$EVAL_GRASP_PART_ANNOTATE" == "true" && "$EVAL_ANNOTATE_SKILL" != "true" ]]; then
+        die "EVAL_GRASP_PART_ANNOTATE=true requires EVAL_ANNOTATE_SKILL=true"
+    fi
+    if [[ "$EVAL_GRASP_PART_ANNOTATE" == "true" && "$EVAL_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+        die "EVAL_GRASP_PART_ANNOTATE=true cannot be combined with EVAL_GUIDANCE_POINT_ON_IMAGE=true"
+    fi
+    if [[ "$EVAL_GRASP_PART_ANNOTATE" == "true" && "$EVAL_GRASP_ANNOTATION_ON_IMAGE" == "true" ]]; then
+        die "EVAL_GRASP_PART_ANNOTATE=true cannot be combined with EVAL_GRASP_ANNOTATION_ON_IMAGE=true"
+    fi
+    if [[ "$EVAL_GUIDANCE_POINT_COLORED" == "true" && "$EVAL_GUIDANCE_POINT_ON_IMAGE" != "true" && "$EVAL_GRASP_PART_ANNOTATE" != "true" ]]; then
+        die "EVAL_GUIDANCE_POINT_COLORED=true requires EVAL_GUIDANCE_POINT_ON_IMAGE=true or EVAL_GRASP_PART_ANNOTATE=true"
+    fi
+    if [[ "$EVAL_GRASP_ANNOTATION_COLORED" == "true" && "$EVAL_GRASP_ANNOTATION_ON_IMAGE" != "true" && "$EVAL_GRASP_PART_ANNOTATE" != "true" ]]; then
+        die "EVAL_GRASP_ANNOTATION_COLORED=true requires EVAL_GRASP_ANNOTATION_ON_IMAGE=true or EVAL_GRASP_PART_ANNOTATE=true"
+    fi
 }
 
 expand_path() {
@@ -558,6 +588,7 @@ main() {
     local step
 
     parse_args "$@"
+    validate_annotation_flags
 
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"

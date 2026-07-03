@@ -60,8 +60,71 @@ COLLECT_OBSERVATION_SPACE="image"
 COLLECT_RANDOMNESS="low"
 COLLECT_ANNOTATE_SKILL=true  # 上游 7d1a72f 后，guidance-point conditioning 依赖 skill/guidance 标注
 COLLECT_GUIDANCE_POINT_ON_IMAGE=false
+COLLECT_GRASP_ANNOTATION_ON_IMAGE=false
+COLLECT_GRASP_PART_ANNOTATE=false
 COLLECT_SKILL_ON_IMAGE=true
 COLLECT_GUIDANCE_POINT_COLORED=false  # yellow=pick/screw, red=place/push/insert
+COLLECT_GRASP_ANNOTATION_COLORED=false
+
+annotation_die() {
+    printf '[%s] ERROR %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+    exit 1
+}
+
+validate_collect_annotation_mode() {
+    if [[ "$COLLECT_GRASP_ANNOTATION_ON_IMAGE" == "true" && "$COLLECT_GRASP_PART_ANNOTATE" == "true" ]]; then
+        annotation_die "COLLECT_GRASP_ANNOTATION_ON_IMAGE=true cannot be combined with COLLECT_GRASP_PART_ANNOTATE=true"
+    fi
+    if [[ "$COLLECT_GRASP_PART_ANNOTATE" == "true" && "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+        annotation_die "COLLECT_GRASP_PART_ANNOTATE=true cannot be combined with COLLECT_GUIDANCE_POINT_ON_IMAGE=true"
+    fi
+    if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" || "$COLLECT_GRASP_ANNOTATION_ON_IMAGE" == "true" || "$COLLECT_GRASP_PART_ANNOTATE" == "true" ]]; then
+        [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]] || annotation_die "Image annotation collection requires COLLECT_ANNOTATE_SKILL=true"
+    fi
+    if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" && "$COLLECT_GUIDANCE_POINT_ON_IMAGE" != "true" && "$COLLECT_GRASP_PART_ANNOTATE" != "true" ]]; then
+        annotation_die "COLLECT_GUIDANCE_POINT_COLORED=true requires COLLECT_GUIDANCE_POINT_ON_IMAGE=true or COLLECT_GRASP_PART_ANNOTATE=true"
+    fi
+    if [[ "$COLLECT_GRASP_ANNOTATION_COLORED" == "true" && "$COLLECT_GRASP_ANNOTATION_ON_IMAGE" != "true" && "$COLLECT_GRASP_PART_ANNOTATE" != "true" ]]; then
+        annotation_die "COLLECT_GRASP_ANNOTATION_COLORED=true requires COLLECT_GRASP_ANNOTATION_ON_IMAGE=true or COLLECT_GRASP_PART_ANNOTATE=true"
+    fi
+    if [[ "$COLLECT_GRASP_PART_ANNOTATE" == "true" && "$COLLECT_GUIDANCE_POINT_COLORED" != "$COLLECT_GRASP_ANNOTATION_COLORED" ]]; then
+        annotation_die "COLLECT_GRASP_PART_ANNOTATE=true requires COLLECT_GUIDANCE_POINT_COLORED and COLLECT_GRASP_ANNOTATION_COLORED to match"
+    fi
+}
+
+build_collect_suffix() {
+    if [[ "$COLLECT_GRASP_PART_ANNOTATE" == "true" ]]; then
+        if [[ "$COLLECT_GRASP_ANNOTATION_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-grasp-part-colored\n'
+        else
+            printf 'rgbd-skill-grasp-part\n'
+        fi
+        return
+    fi
+    if [[ "$COLLECT_GRASP_ANNOTATION_ON_IMAGE" == "true" ]]; then
+        if [[ "$COLLECT_GRASP_ANNOTATION_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-grasp-colored\n'
+        else
+            printf 'rgbd-skill-grasp\n'
+        fi
+        return
+    fi
+    if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+        if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
+            printf 'rgbd-skill-point-colored\n'
+        else
+            printf 'rgbd-skill-point\n'
+        fi
+        return
+    fi
+    if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
+        printf 'rgbd-only-skill\n'
+        return
+    fi
+    printf 'rgbd\n'
+}
+
+validate_collect_annotation_mode
 
 COLLECT_FLAGS=(
     --save-rollouts
@@ -74,8 +137,17 @@ fi
 if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--guidance-point-on-image)
 fi
+if [[ "$COLLECT_GRASP_ANNOTATION_ON_IMAGE" == "true" ]]; then
+    COLLECT_FLAGS+=(--grasp-annotation-on-image)
+fi
+if [[ "$COLLECT_GRASP_PART_ANNOTATE" == "true" ]]; then
+    COLLECT_FLAGS+=(--grasp-part-annotate)
+fi
 if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
     COLLECT_FLAGS+=(--guidance-point-colored)
+fi
+if [[ "$COLLECT_GRASP_ANNOTATION_COLORED" == "true" ]]; then
+    COLLECT_FLAGS+=(--grasp-annotation-colored)
 fi
 if [[ "$COLLECT_ANNOTATE_SKILL" == "true" && "$COLLECT_SKILL_ON_IMAGE" == "true" ]]; then
     COLLECT_FLAGS+=(--skill-on-image)
@@ -86,19 +158,7 @@ PROCESS_DOMAIN="sim"
 PROCESS_SOURCE="rollout"
 PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
-if [[ "$COLLECT_ANNOTATE_SKILL" == "true" ]]; then
-    if [[ "$COLLECT_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
-        if [[ "$COLLECT_GUIDANCE_POINT_COLORED" == "true" ]]; then
-            PROCESS_SUFFIX="rgbd-skill-colored"
-        else
-            PROCESS_SUFFIX="rgbd-skill"
-        fi
-    else
-        PROCESS_SUFFIX="rgbd-only-skill"
-    fi
-else
-    PROCESS_SUFFIX="rgbd"
-fi
+PROCESS_SUFFIX="$(build_collect_suffix)"
 PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
 PROCESS_BATCH_SIZE=2
 PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${TMPDIR:-/tmp}/gpu-snatcher-auto-data-preparation-zarr}"
