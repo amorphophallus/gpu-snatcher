@@ -2,6 +2,20 @@
 
 set -euo pipefail
 
+parse_csv_env_array() {
+    local raw="${1:-}"
+    local -n out_ref="$2"
+    local item
+
+    out_ref=()
+    [[ -n "${raw// }" ]] || return 0
+
+    IFS=',' read -r -a out_ref <<< "$raw"
+    for item in "${!out_ref[@]}"; do
+        out_ref[$item]="$(printf '%s' "${out_ref[$item]}" | xargs)"
+    done
+}
+
 # User-editable configuration
 
 # Comment out a line to skip that step.
@@ -83,6 +97,44 @@ declare -A TASK_EPISODE_LIMIT=(
 #     [round_table]=1
 #     [lamp]=1
 # )
+
+if [[ -n "${STEPS_CSV:-}" ]]; then
+    parse_csv_env_array "${STEPS_CSV}" STEPS
+fi
+if [[ -n "${TASKS_CSV:-}" ]]; then
+    parse_csv_env_array "${TASKS_CSV}" TASKS
+fi
+
+LOCAL_PATH="${LOCAL_PATH_OVERRIDE:-$LOCAL_PATH}"
+REMOTE_PATH="${REMOTE_PATH_OVERRIDE:-$REMOTE_PATH}"
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST_OVERRIDE:-$REMOTE_SSH_HOST}"
+CONDA_ENV="${CONDA_ENV_OVERRIDE:-$CONDA_ENV}"
+split_file="${SPLIT_FILE_OVERRIDE:-$split_file}"
+part_size="${PART_SIZE_OVERRIDE:-$part_size}"
+parallel_upload_workers="${PARALLEL_UPLOAD_WORKERS_OVERRIDE:-$parallel_upload_workers}"
+
+COLLECT_N_ENVS="${COLLECT_N_ENVS_OVERRIDE:-$COLLECT_N_ENVS}"
+COLLECT_N_ROLLOUTS="${COLLECT_N_ROLLOUTS_OVERRIDE:-$COLLECT_N_ROLLOUTS}"
+COLLECT_IF_EXISTS="${COLLECT_IF_EXISTS_OVERRIDE:-$COLLECT_IF_EXISTS}"
+COLLECT_ACTION_TYPE="${COLLECT_ACTION_TYPE_OVERRIDE:-$COLLECT_ACTION_TYPE}"
+COLLECT_OBSERVATION_SPACE="${COLLECT_OBSERVATION_SPACE_OVERRIDE:-$COLLECT_OBSERVATION_SPACE}"
+COLLECT_RANDOMNESS="${COLLECT_RANDOMNESS_OVERRIDE:-$COLLECT_RANDOMNESS}"
+COLLECT_ANNOTATE_SKILL="${COLLECT_ANNOTATE_SKILL_OVERRIDE:-$COLLECT_ANNOTATE_SKILL}"
+COLLECT_GUIDANCE_POINT_ON_IMAGE="${COLLECT_GUIDANCE_POINT_ON_IMAGE_OVERRIDE:-$COLLECT_GUIDANCE_POINT_ON_IMAGE}"
+COLLECT_GRASP_ANNOTATION_ON_IMAGE="${COLLECT_GRASP_ANNOTATION_ON_IMAGE_OVERRIDE:-$COLLECT_GRASP_ANNOTATION_ON_IMAGE}"
+COLLECT_GRASP_PART_ANNOTATE="${COLLECT_GRASP_PART_ANNOTATE_OVERRIDE:-$COLLECT_GRASP_PART_ANNOTATE}"
+COLLECT_SKILL_ON_IMAGE="${COLLECT_SKILL_ON_IMAGE_OVERRIDE:-$COLLECT_SKILL_ON_IMAGE}"
+COLLECT_GUIDANCE_POINT_COLORED="${COLLECT_GUIDANCE_POINT_COLORED_OVERRIDE:-$COLLECT_GUIDANCE_POINT_COLORED}"
+COLLECT_GRASP_ANNOTATION_COLORED="${COLLECT_GRASP_ANNOTATION_COLORED_OVERRIDE:-$COLLECT_GRASP_ANNOTATION_COLORED}"
+COLLECT_PERTURB_MODE="${COLLECT_PERTURB_MODE_OVERRIDE:-$COLLECT_PERTURB_MODE}"
+PROCESS_BATCH_SIZE="${PROCESS_BATCH_SIZE_OVERRIDE:-2}"
+UPLOAD_RELATIVE_DIR="${UPLOAD_RELATIVE_DIR_OVERRIDE:-data/processed/diffik/sim}"
+
+if [[ -n "${COLLECT_N_ROLLOUTS_OVERRIDE:-}" ]]; then
+    for task in "${!TASK_EPISODE_LIMIT[@]}"; do
+        TASK_EPISODE_LIMIT["$task"]="$COLLECT_N_ROLLOUTS"
+    done
+fi
 
 annotation_die() {
     printf '[%s] ERROR %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
@@ -181,15 +233,12 @@ PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
 PROCESS_SUFFIX="$(build_collect_suffix)"
 PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
-PROCESS_BATCH_SIZE=2
 RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
 PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${RUNTIME_TMP_ROOT}/gpu-snatcher-auto-data-preparation}"
 
 PROCESS_FLAGS=(
     --overwrite
 )
-
-UPLOAD_RELATIVE_DIR="data/processed/diffik/sim"
 
 SPLIT_FILE_ENABLED=false
 PART_SIZE_BYTES=0
@@ -387,6 +436,24 @@ get_lmdb_find_pattern() {
     else
         printf '%s\n' "${PROCESS_OUTCOME}*.lmdb"
     fi
+}
+
+is_matching_lmdb_basename() {
+    local dataset_basename="$1"
+
+    python3 - "$dataset_basename" "$PROCESS_OUTPUT_SUFFIX" "$PROCESS_OUTCOME" <<'PY'
+import re
+import sys
+
+dataset_basename, process_output_suffix, process_outcome = sys.argv[1:4]
+
+if process_output_suffix:
+    pattern = rf"^{re.escape(process_output_suffix)}-\d+\.lmdb$"
+else:
+    pattern = rf"^{re.escape(process_outcome)}.*\.lmdb$"
+
+raise SystemExit(0 if re.match(pattern, dataset_basename) else 1)
+PY
 }
 
 get_conda_executable() {
@@ -979,6 +1046,9 @@ upload_step() {
     find_pattern="$(get_lmdb_find_pattern)"
 
     while IFS= read -r -d '' dir; do
+        if ! is_matching_lmdb_basename "${dir##*/}"; then
+            continue
+        fi
         matching_dirs+=("$dir")
     done < <(find "$parent_dir" -maxdepth 1 -type d -name "$find_pattern" -print0 | LC_ALL=C sort -z)
 

@@ -87,11 +87,26 @@ DATA_GUIDANCE_POINT_COLORED="false"
 DATA_ANNOTATE_GRASP="false"
 DATA_ANNOTATE_GRASP_COLORED="false"
 DATA_ANNOTATE_GRASP_PART="false"
+WANDB_PROJECT="multi-task-rgbd-skill-low-0610"
 WANDB_CONTINUE_RUN_ID=""  # 设置 wandb run ID 以从 checkpoint resume
 CHECKPOINT_FALLBACK_DIR="/home/hy/tmp/checkpoint_fallback"  # NAS 断连时 checkpoint 暂存本地
+DATA_STORAGE_FORMAT="${DATA_STORAGE_FORMAT_OVERRIDE:-$DATA_STORAGE_FORMAT}"
+DATA_LOAD_INTO_MEMORY="${DATA_LOAD_INTO_MEMORY_OVERRIDE:-$DATA_LOAD_INTO_MEMORY}"
+DATA_PATHS_OVERRIDE="${DATA_PATHS_OVERRIDE_OVERRIDE:-$DATA_PATHS_OVERRIDE}"
+DATA_ANNOTATE_GUIDANCE_POINT="${DATA_ANNOTATE_GUIDANCE_POINT_OVERRIDE:-$DATA_ANNOTATE_GUIDANCE_POINT}"
+DATA_ANNOTATE_SKILL_ONE_HOT="${DATA_ANNOTATE_SKILL_ONE_HOT_OVERRIDE:-$DATA_ANNOTATE_SKILL_ONE_HOT}"
+DATA_GUIDANCE_POINT_COLORED="${DATA_GUIDANCE_POINT_COLORED_OVERRIDE:-$DATA_GUIDANCE_POINT_COLORED}"
+DATA_ANNOTATE_GRASP="${DATA_ANNOTATE_GRASP_OVERRIDE:-$DATA_ANNOTATE_GRASP}"
+DATA_ANNOTATE_GRASP_COLORED="${DATA_ANNOTATE_GRASP_COLORED_OVERRIDE:-$DATA_ANNOTATE_GRASP_COLORED}"
+DATA_ANNOTATE_GRASP_PART="${DATA_ANNOTATE_GRASP_PART_OVERRIDE:-$DATA_ANNOTATE_GRASP_PART}"
+WANDB_CONTINUE_RUN_ID="${WANDB_CONTINUE_RUN_ID_OVERRIDE:-$WANDB_CONTINUE_RUN_ID}"
+CHECKPOINT_FALLBACK_DIR="${CHECKPOINT_FALLBACK_DIR_OVERRIDE:-$CHECKPOINT_FALLBACK_DIR}"
 validate_dataset_annotation_config
 DATA_SUFFIX="$(build_data_suffix)"
 DATA_SUFFIX_FALLBACK=""
+EXPERIMENT_NAME="${EXPERIMENT_NAME_OVERRIDE:-rgbd/dit}"
+TASK_SPEC="${TASK_SPEC_OVERRIDE:-[one_leg, round_table, lamp]}"
+WANDB_PROJECT="${WANDB_PROJECT_OVERRIDE:-$WANDB_PROJECT}"
 
 # Multi-card training command.
 TRAIN_COMMAND_PARTS=(
@@ -100,10 +115,10 @@ TRAIN_COMMAND_PARTS=(
     --nproc_per_node=2
     -m
     src.train.bc_ddp
-    +experiment=rgbd/dit  # Exp4: rgbd+only skill
+    "+experiment=${EXPERIMENT_NAME}"  # Exp4: rgbd+only skill
     # vision_encoder=resnet  # image 设置时取消注释
     # vision_encoder.pretrained=false  # image 设置时取消注释
-    "task=[one_leg, round_table, lamp]"  # [one_leg, round_table, lamp]
+    "task=${TASK_SPEC}"  # [one_leg, round_table, lamp]
     data.demo_source=rollout
     data.demo_outcome=success
     "data.suffix=${DATA_SUFFIX}"
@@ -120,7 +135,7 @@ TRAIN_COMMAND_PARTS=(
     training.num_epochs=3000
     training.steps_per_epoch=100
     training.save_per_epoch=500
-    wandb.project=multi-task-rgbd-skill-low-0610
+    "wandb.project=${WANDB_PROJECT}"
     wandb.mode=online
     randomness=low
     dryrun=false
@@ -146,6 +161,10 @@ NUM_GPUS="2"
 GPU_ID="5,6"
 DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # 243 /home NVMe
 RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
+SSH_NAME="${SSH_NAME_OVERRIDE:-$SSH_NAME}"
+NUM_GPUS="${NUM_GPUS_OVERRIDE:-$NUM_GPUS}"
+GPU_ID="${GPU_ID_OVERRIDE:-$GPU_ID}"
+DATA_DIR_PROCESSED="${DATA_DIR_PROCESSED_OVERRIDE:-$DATA_DIR_PROCESSED}"
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)
 
