@@ -137,6 +137,244 @@ PY
         "$seed"
 }
 
+print_usage() {
+    cat <<'USAGE'
+Usage: auto_train_multi_card.sh [options]
+
+Manual defaults live near the top of this script. CLI options override those defaults
+and any *_OVERRIDE environment variables for one run.
+
+Dataset/model:
+  --experiment NAME
+  --task-spec "[one_leg, round_table, lamp]"
+  --data-suffix SUFFIX
+  --data-suffix-fallback SUFFIX
+  --data-paths-override VALUE
+  --storage-format FORMAT
+  --load-into-memory true|false
+  --guidance-point / --no-guidance-point
+  --skill-one-hot / --no-skill-one-hot
+  --guidance-point-colored / --no-guidance-point-colored
+  --grasp / --no-grasp
+  --grasp-colored / --no-grasp-colored
+  --grasp-part / --no-grasp-part
+  --noise-pos-std-m M
+  --noise-ori-std-deg DEG
+  --noise-seed SEED
+  --noise-mode MODE
+  --noise-apply-to point|grasp|all
+
+Training/runtime:
+  --batch-size N
+  --num-epochs N
+  --steps-per-epoch N
+  --save-per-epoch N
+  --dataloader-workers N
+  --randomness low|med|high
+  --dryrun true|false
+  --wandb-project NAME
+  --wandb-mode online|offline|disabled
+  --wandb-continue-run-id ID
+  --ddp-shard-enabled true|false
+  --num-gpus N
+  --gpu-id CSV
+  --ssh-name HOST
+  --data-dir-processed DIR
+  --remote-project-dir DIR
+  --remote-conda-env ENV
+  --checkpoint-fallback-dir DIR
+  --force
+USAGE
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                print_usage
+                exit 0
+                ;;
+            --experiment)
+                EXPERIMENT_NAME="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --task-spec)
+                TASK_SPEC="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --data-suffix)
+                DATA_SUFFIX_OVERRIDE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --data-suffix-fallback)
+                DATA_SUFFIX_FALLBACK="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --data-paths-override)
+                DATA_PATHS_OVERRIDE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --storage-format)
+                DATA_STORAGE_FORMAT="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --load-into-memory)
+                DATA_LOAD_INTO_MEMORY="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --guidance-point)
+                DATA_ANNOTATE_GUIDANCE_POINT=true
+                shift
+                ;;
+            --no-guidance-point)
+                DATA_ANNOTATE_GUIDANCE_POINT=false
+                shift
+                ;;
+            --skill-one-hot)
+                DATA_ANNOTATE_SKILL_ONE_HOT=true
+                shift
+                ;;
+            --no-skill-one-hot)
+                DATA_ANNOTATE_SKILL_ONE_HOT=false
+                shift
+                ;;
+            --guidance-point-colored)
+                DATA_GUIDANCE_POINT_COLORED=true
+                shift
+                ;;
+            --no-guidance-point-colored)
+                DATA_GUIDANCE_POINT_COLORED=false
+                shift
+                ;;
+            --grasp)
+                DATA_ANNOTATE_GRASP=true
+                shift
+                ;;
+            --no-grasp)
+                DATA_ANNOTATE_GRASP=false
+                shift
+                ;;
+            --grasp-colored)
+                DATA_ANNOTATE_GRASP_COLORED=true
+                shift
+                ;;
+            --no-grasp-colored)
+                DATA_ANNOTATE_GRASP_COLORED=false
+                shift
+                ;;
+            --grasp-part)
+                DATA_ANNOTATE_GRASP_PART=true
+                shift
+                ;;
+            --no-grasp-part)
+                DATA_ANNOTATE_GRASP_PART=false
+                shift
+                ;;
+            --noise-pos-std-m)
+                DATA_ANNOTATION_NOISE_POS_STD_M="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-ori-std-deg)
+                DATA_ANNOTATION_NOISE_ORI_STD_DEG="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-seed)
+                DATA_ANNOTATION_NOISE_SEED="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-mode)
+                DATA_ANNOTATION_NOISE_MODE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-apply-to)
+                DATA_ANNOTATION_NOISE_APPLY_TO="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --batch-size)
+                TRAIN_BATCH_SIZE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --num-epochs)
+                TRAIN_NUM_EPOCHS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --steps-per-epoch)
+                TRAIN_STEPS_PER_EPOCH="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --save-per-epoch)
+                TRAIN_SAVE_PER_EPOCH="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --dataloader-workers)
+                DATA_DATALOADER_WORKERS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --randomness)
+                TRAIN_RANDOMNESS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --dryrun)
+                TRAIN_DRYRUN="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --wandb-project)
+                WANDB_PROJECT="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --wandb-mode)
+                WANDB_MODE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --wandb-continue-run-id)
+                WANDB_CONTINUE_RUN_ID="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --ddp-shard-enabled)
+                DATA_DDP_SHARD_ENABLED="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --num-gpus)
+                NUM_GPUS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --gpu-id)
+                GPU_ID="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --ssh-name)
+                SSH_NAME="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --data-dir-processed)
+                DATA_DIR_PROCESSED="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --remote-project-dir)
+                REMOTE_PROJECT_DIR="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --remote-conda-env)
+                REMOTE_CONDA_ENV="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --checkpoint-fallback-dir)
+                CHECKPOINT_FALLBACK_DIR="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --force|-force)
+                FORCE=1
+                shift
+                ;;
+            *)
+                printf 'Unknown argument: %s\n\n' "$1" >&2
+                print_usage >&2
+                exit 2
+                ;;
+        esac
+    done
+}
+
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
@@ -154,6 +392,18 @@ DATA_ANNOTATION_NOISE_APPLY_TO="all"
 WANDB_PROJECT="multi-task-rgbd-skill-low-0610"
 WANDB_CONTINUE_RUN_ID=""  # 设置 wandb run ID 以从 checkpoint resume
 CHECKPOINT_FALLBACK_DIR="/home/hy/tmp/checkpoint_fallback"  # NAS 断连时 checkpoint 暂存本地
+DATA_SUFFIX_FALLBACK=""
+EXPERIMENT_NAME="rgbd/dit"
+TASK_SPEC="[one_leg, round_table, lamp]"
+DATA_DATALOADER_WORKERS=4
+TRAIN_BATCH_SIZE=512
+TRAIN_NUM_EPOCHS=3000
+TRAIN_STEPS_PER_EPOCH=100
+TRAIN_SAVE_PER_EPOCH=500
+TRAIN_RANDOMNESS="low"
+TRAIN_DRYRUN="false"
+WANDB_MODE="online"
+DATA_DDP_SHARD_ENABLED="true"
 DATA_STORAGE_FORMAT="${DATA_STORAGE_FORMAT_OVERRIDE:-$DATA_STORAGE_FORMAT}"
 DATA_LOAD_INTO_MEMORY="${DATA_LOAD_INTO_MEMORY_OVERRIDE:-$DATA_LOAD_INTO_MEMORY}"
 DATA_PATHS_OVERRIDE="${DATA_PATHS_OVERRIDE_OVERRIDE:-$DATA_PATHS_OVERRIDE}"
@@ -170,6 +420,34 @@ DATA_ANNOTATION_NOISE_MODE="${DATA_ANNOTATION_NOISE_MODE_OVERRIDE:-$DATA_ANNOTAT
 DATA_ANNOTATION_NOISE_APPLY_TO="${DATA_ANNOTATION_NOISE_APPLY_TO_OVERRIDE:-$DATA_ANNOTATION_NOISE_APPLY_TO}"
 WANDB_CONTINUE_RUN_ID="${WANDB_CONTINUE_RUN_ID_OVERRIDE:-$WANDB_CONTINUE_RUN_ID}"
 CHECKPOINT_FALLBACK_DIR="${CHECKPOINT_FALLBACK_DIR_OVERRIDE:-$CHECKPOINT_FALLBACK_DIR}"
+DATA_SUFFIX_FALLBACK="${DATA_SUFFIX_FALLBACK_OVERRIDE:-$DATA_SUFFIX_FALLBACK}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME_OVERRIDE:-$EXPERIMENT_NAME}"
+TASK_SPEC="${TASK_SPEC_OVERRIDE:-$TASK_SPEC}"
+DATA_DATALOADER_WORKERS="${DATA_DATALOADER_WORKERS_OVERRIDE:-$DATA_DATALOADER_WORKERS}"
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE_OVERRIDE:-$TRAIN_BATCH_SIZE}"
+TRAIN_NUM_EPOCHS="${TRAIN_NUM_EPOCHS_OVERRIDE:-$TRAIN_NUM_EPOCHS}"
+TRAIN_STEPS_PER_EPOCH="${TRAIN_STEPS_PER_EPOCH_OVERRIDE:-$TRAIN_STEPS_PER_EPOCH}"
+TRAIN_SAVE_PER_EPOCH="${TRAIN_SAVE_PER_EPOCH_OVERRIDE:-$TRAIN_SAVE_PER_EPOCH}"
+TRAIN_RANDOMNESS="${TRAIN_RANDOMNESS_OVERRIDE:-$TRAIN_RANDOMNESS}"
+TRAIN_DRYRUN="${TRAIN_DRYRUN_OVERRIDE:-$TRAIN_DRYRUN}"
+WANDB_PROJECT="${WANDB_PROJECT_OVERRIDE:-$WANDB_PROJECT}"
+WANDB_MODE="${WANDB_MODE_OVERRIDE:-$WANDB_MODE}"
+DATA_DDP_SHARD_ENABLED="${DATA_DDP_SHARD_ENABLED_OVERRIDE:-$DATA_DDP_SHARD_ENABLED}"
+SSH_NAME="243"
+NUM_GPUS="2"
+GPU_ID="5,6"
+DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # 243 /home NVMe
+RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
+REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/mnt/nas/share/home/hy/robust-rearrangement-custom}"
+REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-rr}"
+FORCE=0
+SSH_NAME="${SSH_NAME_OVERRIDE:-$SSH_NAME}"
+NUM_GPUS="${NUM_GPUS_OVERRIDE:-$NUM_GPUS}"
+GPU_ID="${GPU_ID_OVERRIDE:-$GPU_ID}"
+DATA_DIR_PROCESSED="${DATA_DIR_PROCESSED_OVERRIDE:-$DATA_DIR_PROCESSED}"
+REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR_OVERRIDE:-$REMOTE_PROJECT_DIR}"
+REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV_OVERRIDE:-$REMOTE_CONDA_ENV}"
+parse_args "$@"
 validate_dataset_annotation_config
 DATA_SUFFIX="$(build_data_suffix)"
 DATA_NOISE_SUFFIX="$(build_noise_suffix "$DATA_ANNOTATION_NOISE_POS_STD_M" "$DATA_ANNOTATION_NOISE_ORI_STD_DEG" "$DATA_ANNOTATION_NOISE_MODE" "$DATA_ANNOTATION_NOISE_APPLY_TO" "$DATA_ANNOTATION_NOISE_SEED")"
@@ -177,17 +455,12 @@ if [[ -n "$DATA_NOISE_SUFFIX" ]]; then
     DATA_SUFFIX="${DATA_SUFFIX}-${DATA_NOISE_SUFFIX}"
 fi
 DATA_SUFFIX="${DATA_SUFFIX_OVERRIDE:-$DATA_SUFFIX}"
-DATA_SUFFIX_FALLBACK=""
-DATA_SUFFIX_FALLBACK="${DATA_SUFFIX_FALLBACK_OVERRIDE:-$DATA_SUFFIX_FALLBACK}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME_OVERRIDE:-rgbd/dit}"
-TASK_SPEC="${TASK_SPEC_OVERRIDE:-[one_leg, round_table, lamp]}"
-WANDB_PROJECT="${WANDB_PROJECT_OVERRIDE:-$WANDB_PROJECT}"
 
 # Multi-card training command.
 TRAIN_COMMAND_PARTS=(
     torchrun
     --standalone
-    --nproc_per_node=2
+    "--nproc_per_node=${NUM_GPUS}"
     -m
     src.train.bc_ddp
     "+experiment=${EXPERIMENT_NAME}"  # Exp4: rgbd+only skill
@@ -210,16 +483,16 @@ TRAIN_COMMAND_PARTS=(
     "data.annotation_noise_apply_to=${DATA_ANNOTATION_NOISE_APPLY_TO}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
-    data.dataloader_workers=4
-    training.batch_size=512
-    training.num_epochs=3000
-    training.steps_per_epoch=100
-    training.save_per_epoch=500
+    "data.dataloader_workers=${DATA_DATALOADER_WORKERS}"
+    "training.batch_size=${TRAIN_BATCH_SIZE}"
+    "training.num_epochs=${TRAIN_NUM_EPOCHS}"
+    "training.steps_per_epoch=${TRAIN_STEPS_PER_EPOCH}"
+    "training.save_per_epoch=${TRAIN_SAVE_PER_EPOCH}"
     "wandb.project=${WANDB_PROJECT}"
-    wandb.mode=online
-    randomness=low
-    dryrun=false
-    data.ddp_shard_enabled=true
+    "wandb.mode=${WANDB_MODE}"
+    "randomness=${TRAIN_RANDOMNESS}"
+    "dryrun=${TRAIN_DRYRUN}"
+    "data.ddp_shard_enabled=${DATA_DDP_SHARD_ENABLED}"
 )
 if [[ -n "${DATA_SUFFIX_FALLBACK// }" ]]; then
     TRAIN_COMMAND_PARTS+=("data.suffix_fallback=${DATA_SUFFIX_FALLBACK}")
@@ -236,15 +509,6 @@ fi
 TRAIN_COMMAND="$(join_command_parts "${TRAIN_COMMAND_PARTS[@]}")"
 WANDB_PROJECT_NAME="$(get_command_part_value wandb.project "${TRAIN_COMMAND_PARTS[@]}" || printf 'project')"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-project}"
-SSH_NAME="243"
-NUM_GPUS="2"
-GPU_ID="5,6"
-DATA_DIR_PROCESSED="~/robust-rearrangement-custom/data/"  # 243 /home NVMe
-RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
-SSH_NAME="${SSH_NAME_OVERRIDE:-$SSH_NAME}"
-NUM_GPUS="${NUM_GPUS_OVERRIDE:-$NUM_GPUS}"
-GPU_ID="${GPU_ID_OVERRIDE:-$GPU_ID}"
-DATA_DIR_PROCESSED="${DATA_DIR_PROCESSED_OVERRIDE:-$DATA_DIR_PROCESSED}"
 FAST_SERVER=(236 230)
 SLOW_SERVER=(228 238 240 221 251 181 183)
 
@@ -254,9 +518,6 @@ CONNECT_TIMEOUT_SECONDS="${CONNECT_TIMEOUT_SECONDS:-5}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-300}"
 SSH_COMMAND_TIMEOUT_SECONDS="${SSH_COMMAND_TIMEOUT_SECONDS:-15}"
-REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/mnt/nas/share/home/hy/robust-rearrangement-custom}"
-REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-rr}"
-FORCE=0
 SSH_COMMON_ARGS=(
     -o BatchMode=yes
     -o ConnectTimeout="$CONNECT_TIMEOUT_SECONDS"
@@ -990,10 +1251,6 @@ write_structured_status() {
 }
 
 main() {
-    if ! parse_extra_args "$@"; then
-        exit 1
-    fi
-
     if [[ -z "${TRAIN_COMMAND// }" ]]; then
         echo "Set TRAIN_COMMAND at the top of this script before running it." >&2
         exit 1

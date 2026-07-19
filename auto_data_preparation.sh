@@ -16,6 +16,243 @@ parse_csv_env_array() {
     done
 }
 
+parse_cli_list_array() {
+    local raw="${1:-}"
+    local -n out_ref="$2"
+    local item
+
+    raw="${raw//,/ }"
+    raw="${raw//+/ }"
+    out_ref=()
+    read -r -a out_ref <<< "$raw"
+    for item in "${!out_ref[@]}"; do
+        out_ref[$item]="$(printf '%s' "${out_ref[$item]}" | xargs)"
+    done
+}
+
+print_usage() {
+    cat <<'USAGE'
+Usage: auto_data_preparation.sh [options]
+
+Manual defaults live near the top of this script. CLI options override those defaults
+and any *_OVERRIDE environment variables for one run.
+
+Common:
+  --steps "collect_data process_pickles upload"
+  --tasks "one_leg,round_table,lamp"
+  --local-path PATH
+  --remote-path PATH
+  --remote-ssh-host HOST
+  --conda-env ENV
+
+Collect:
+  --n-envs N
+  --n-rollouts N
+  --if-exists append|overwrite|skip
+  --randomness low|med|high
+  --action-type TYPE
+  --observation-space SPACE
+  --annotate-skill / --no-annotate-skill
+  --guidance-point-on-image / --no-guidance-point-on-image
+  --grasp-annotation-on-image / --no-grasp-annotation-on-image
+  --grasp-part-annotate / --no-grasp-part-annotate
+  --skill-on-image / --no-skill-on-image
+  --guidance-point-colored / --no-guidance-point-colored
+  --grasp-annotation-colored / --no-grasp-annotation-colored
+  --perturb-mode MODE
+  --noise-pos-std-m M
+  --noise-ori-std-deg DEG
+  --noise-seed SEED
+  --noise-mode MODE
+  --noise-apply-to point|grasp|all
+
+Process/upload:
+  --process-batch-size N
+  --process-suffix SUFFIX
+  --process-output-suffix SUFFIX
+  --upload-relative-dir DIR
+  --split-file true|false
+  --part-size MB
+  --parallel-upload-workers N
+USAGE
+}
+
+COLLECT_N_ROLLOUTS_CLI_SET=0
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                print_usage
+                exit 0
+                ;;
+            --steps)
+                parse_cli_list_array "${2:?Missing value for $1}" STEPS
+                shift 2
+                ;;
+            --tasks)
+                parse_cli_list_array "${2:?Missing value for $1}" TASKS
+                shift 2
+                ;;
+            --local-path)
+                LOCAL_PATH="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --remote-path)
+                REMOTE_PATH="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --remote-ssh-host)
+                REMOTE_SSH_HOST="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --conda-env)
+                CONDA_ENV="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --n-envs)
+                COLLECT_N_ENVS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --n-rollouts)
+                COLLECT_N_ROLLOUTS="${2:?Missing value for $1}"
+                COLLECT_N_ROLLOUTS_CLI_SET=1
+                shift 2
+                ;;
+            --if-exists)
+                COLLECT_IF_EXISTS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --randomness)
+                COLLECT_RANDOMNESS="${2:?Missing value for $1}"
+                PROCESS_RANDOMNESS="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --action-type)
+                COLLECT_ACTION_TYPE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --observation-space)
+                COLLECT_OBSERVATION_SPACE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --annotate-skill)
+                COLLECT_ANNOTATE_SKILL=true
+                shift
+                ;;
+            --no-annotate-skill)
+                COLLECT_ANNOTATE_SKILL=false
+                shift
+                ;;
+            --guidance-point-on-image)
+                COLLECT_GUIDANCE_POINT_ON_IMAGE=true
+                shift
+                ;;
+            --no-guidance-point-on-image)
+                COLLECT_GUIDANCE_POINT_ON_IMAGE=false
+                shift
+                ;;
+            --grasp-annotation-on-image)
+                COLLECT_GRASP_ANNOTATION_ON_IMAGE=true
+                shift
+                ;;
+            --no-grasp-annotation-on-image)
+                COLLECT_GRASP_ANNOTATION_ON_IMAGE=false
+                shift
+                ;;
+            --grasp-part-annotate)
+                COLLECT_GRASP_PART_ANNOTATE=true
+                shift
+                ;;
+            --no-grasp-part-annotate)
+                COLLECT_GRASP_PART_ANNOTATE=false
+                shift
+                ;;
+            --skill-on-image)
+                COLLECT_SKILL_ON_IMAGE=true
+                shift
+                ;;
+            --no-skill-on-image)
+                COLLECT_SKILL_ON_IMAGE=false
+                shift
+                ;;
+            --guidance-point-colored)
+                COLLECT_GUIDANCE_POINT_COLORED=true
+                shift
+                ;;
+            --no-guidance-point-colored)
+                COLLECT_GUIDANCE_POINT_COLORED=false
+                shift
+                ;;
+            --grasp-annotation-colored)
+                COLLECT_GRASP_ANNOTATION_COLORED=true
+                shift
+                ;;
+            --no-grasp-annotation-colored)
+                COLLECT_GRASP_ANNOTATION_COLORED=false
+                shift
+                ;;
+            --perturb-mode)
+                COLLECT_PERTURB_MODE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-pos-std-m)
+                COLLECT_ANNOTATION_NOISE_POS_STD_M="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-ori-std-deg)
+                COLLECT_ANNOTATION_NOISE_ORI_STD_DEG="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-seed)
+                COLLECT_ANNOTATION_NOISE_SEED="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-mode)
+                COLLECT_ANNOTATION_NOISE_MODE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --noise-apply-to)
+                COLLECT_ANNOTATION_NOISE_APPLY_TO="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --process-batch-size)
+                PROCESS_BATCH_SIZE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --process-suffix)
+                PROCESS_SUFFIX_OVERRIDE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --process-output-suffix)
+                PROCESS_OUTPUT_SUFFIX_OVERRIDE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --upload-relative-dir)
+                UPLOAD_RELATIVE_DIR="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --split-file)
+                split_file="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --part-size)
+                part_size="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --parallel-upload-workers)
+                parallel_upload_workers="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            *)
+                printf 'Unknown argument: %s\n\n' "$1" >&2
+                print_usage >&2
+                exit 2
+                ;;
+        esac
+    done
+}
+
 # User-editable configuration
 
 # Comment out a line to skip that step.
@@ -140,7 +377,9 @@ COLLECT_ANNOTATION_NOISE_APPLY_TO="${COLLECT_ANNOTATION_NOISE_APPLY_TO_OVERRIDE:
 PROCESS_BATCH_SIZE="${PROCESS_BATCH_SIZE_OVERRIDE:-2}"
 UPLOAD_RELATIVE_DIR="${UPLOAD_RELATIVE_DIR_OVERRIDE:-data/processed/diffik/sim}"
 
-if [[ -n "${COLLECT_N_ROLLOUTS_OVERRIDE:-}" ]]; then
+parse_args "$@"
+
+if [[ -n "${COLLECT_N_ROLLOUTS_OVERRIDE:-}" || "$COLLECT_N_ROLLOUTS_CLI_SET" == "1" ]]; then
     for task in "${!TASK_EPISODE_LIMIT[@]}"; do
         TASK_EPISODE_LIMIT["$task"]="$COLLECT_N_ROLLOUTS"
     done
@@ -309,7 +548,7 @@ fi
 PROCESS_CONTROLLER="diffik"
 PROCESS_DOMAIN="sim"
 PROCESS_SOURCE="rollout"
-PROCESS_RANDOMNESS="low"
+PROCESS_RANDOMNESS="$COLLECT_RANDOMNESS"
 PROCESS_OUTCOME="success"
 PROCESS_SUFFIX="$(build_collect_suffix)"
 PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
