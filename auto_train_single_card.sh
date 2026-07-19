@@ -78,6 +78,65 @@ build_data_suffix() {
     printf 'rgbd\n'
 }
 
+format_noise_component() {
+    python3 - "$1" "$2" <<'PY'
+import math
+import re
+import sys
+
+prefix = sys.argv[1]
+value = float(sys.argv[2])
+if not math.isfinite(value):
+    raise SystemExit(f"{prefix} noise value must be finite, got {value!r}")
+text = f"{value:g}".replace("-", "m").replace(".", "p")
+text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+print(f"{prefix}{text}")
+PY
+}
+
+sanitize_suffix_component() {
+    python3 - "$1" <<'PY'
+import re
+import sys
+
+text = sys.argv[1].strip()
+text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+print(text.strip("_") or "unknown")
+PY
+}
+
+build_noise_suffix() {
+    local pos_std_m="$1"
+    local ori_std_deg="$2"
+    local mode="$3"
+    local apply_to="$4"
+    local seed="$5"
+    local pos_mm
+    local nonzero
+
+    nonzero="$(python3 - "$pos_std_m" "$ori_std_deg" <<'PY'
+import sys
+print("1" if float(sys.argv[1]) != 0.0 or float(sys.argv[2]) != 0.0 else "0")
+PY
+)"
+    if [[ "$nonzero" == "0" ]]; then
+        printf '%s\n' ""
+        return
+    fi
+
+    pos_mm="$(python3 - "$pos_std_m" <<'PY'
+import sys
+print(float(sys.argv[1]) * 1000.0)
+PY
+)"
+    printf 'noise-%s-%s-mode%s-apply%s-seed%s\n' \
+        "$(format_noise_component pos "$pos_mm")" \
+        "$(format_noise_component ori "$ori_std_deg")" \
+        "$(sanitize_suffix_component "$mode")" \
+        "$(sanitize_suffix_component "$apply_to")" \
+        "$seed"
+}
+
 DATA_STORAGE_FORMAT="lmdb"
 DATA_LOAD_INTO_MEMORY="false"
 DATA_PATHS_OVERRIDE=""
@@ -88,9 +147,35 @@ DATA_GUIDANCE_POINT_COLORED="false"  # yellow=pick/screw, red=place/push/insert
 DATA_ANNOTATE_GRASP="false"
 DATA_ANNOTATE_GRASP_COLORED="false"
 DATA_ANNOTATE_GRASP_PART="false"
+DATA_ANNOTATION_NOISE_POS_STD_M="0"
+DATA_ANNOTATION_NOISE_ORI_STD_DEG="0"
+DATA_ANNOTATION_NOISE_SEED="0"
+DATA_ANNOTATION_NOISE_MODE="gaussian_clip_2sigma"
+DATA_ANNOTATION_NOISE_APPLY_TO="all"
+DATA_STORAGE_FORMAT="${DATA_STORAGE_FORMAT_OVERRIDE:-$DATA_STORAGE_FORMAT}"
+DATA_LOAD_INTO_MEMORY="${DATA_LOAD_INTO_MEMORY_OVERRIDE:-$DATA_LOAD_INTO_MEMORY}"
+DATA_PATHS_OVERRIDE="${DATA_PATHS_OVERRIDE_OVERRIDE:-$DATA_PATHS_OVERRIDE}"
+CHECKPOINT_FALLBACK_DIR="${CHECKPOINT_FALLBACK_DIR_OVERRIDE:-$CHECKPOINT_FALLBACK_DIR}"
+DATA_ANNOTATE_GUIDANCE_POINT="${DATA_ANNOTATE_GUIDANCE_POINT_OVERRIDE:-$DATA_ANNOTATE_GUIDANCE_POINT}"
+DATA_ANNOTATE_SKILL_ONE_HOT="${DATA_ANNOTATE_SKILL_ONE_HOT_OVERRIDE:-$DATA_ANNOTATE_SKILL_ONE_HOT}"
+DATA_GUIDANCE_POINT_COLORED="${DATA_GUIDANCE_POINT_COLORED_OVERRIDE:-$DATA_GUIDANCE_POINT_COLORED}"
+DATA_ANNOTATE_GRASP="${DATA_ANNOTATE_GRASP_OVERRIDE:-$DATA_ANNOTATE_GRASP}"
+DATA_ANNOTATE_GRASP_COLORED="${DATA_ANNOTATE_GRASP_COLORED_OVERRIDE:-$DATA_ANNOTATE_GRASP_COLORED}"
+DATA_ANNOTATE_GRASP_PART="${DATA_ANNOTATE_GRASP_PART_OVERRIDE:-$DATA_ANNOTATE_GRASP_PART}"
+DATA_ANNOTATION_NOISE_POS_STD_M="${DATA_ANNOTATION_NOISE_POS_STD_M_OVERRIDE:-$DATA_ANNOTATION_NOISE_POS_STD_M}"
+DATA_ANNOTATION_NOISE_ORI_STD_DEG="${DATA_ANNOTATION_NOISE_ORI_STD_DEG_OVERRIDE:-$DATA_ANNOTATION_NOISE_ORI_STD_DEG}"
+DATA_ANNOTATION_NOISE_SEED="${DATA_ANNOTATION_NOISE_SEED_OVERRIDE:-$DATA_ANNOTATION_NOISE_SEED}"
+DATA_ANNOTATION_NOISE_MODE="${DATA_ANNOTATION_NOISE_MODE_OVERRIDE:-$DATA_ANNOTATION_NOISE_MODE}"
+DATA_ANNOTATION_NOISE_APPLY_TO="${DATA_ANNOTATION_NOISE_APPLY_TO_OVERRIDE:-$DATA_ANNOTATION_NOISE_APPLY_TO}"
 validate_dataset_annotation_config
 DATA_SUFFIX="$(build_data_suffix)"
+DATA_NOISE_SUFFIX="$(build_noise_suffix "$DATA_ANNOTATION_NOISE_POS_STD_M" "$DATA_ANNOTATION_NOISE_ORI_STD_DEG" "$DATA_ANNOTATION_NOISE_MODE" "$DATA_ANNOTATION_NOISE_APPLY_TO" "$DATA_ANNOTATION_NOISE_SEED")"
+if [[ -n "$DATA_NOISE_SUFFIX" ]]; then
+    DATA_SUFFIX="${DATA_SUFFIX}-${DATA_NOISE_SUFFIX}"
+fi
+DATA_SUFFIX="${DATA_SUFFIX_OVERRIDE:-$DATA_SUFFIX}"
 DATA_SUFFIX_FALLBACK=""
+DATA_SUFFIX_FALLBACK="${DATA_SUFFIX_FALLBACK_OVERRIDE:-$DATA_SUFFIX_FALLBACK}"
 
 # Single-card training command.
 TRAIN_COMMAND_PARTS=(
@@ -109,6 +194,11 @@ TRAIN_COMMAND_PARTS=(
     "data.annotate_grasp_colored=${DATA_ANNOTATE_GRASP_COLORED}"
     "data.annotate_grasp_part=${DATA_ANNOTATE_GRASP_PART}"
     "data.annotate_skill_one_hot=${DATA_ANNOTATE_SKILL_ONE_HOT}"
+    "data.annotation_noise_pos_std_m=${DATA_ANNOTATION_NOISE_POS_STD_M}"
+    "data.annotation_noise_ori_std_deg=${DATA_ANNOTATION_NOISE_ORI_STD_DEG}"
+    "data.annotation_noise_seed=${DATA_ANNOTATION_NOISE_SEED}"
+    "data.annotation_noise_mode=${DATA_ANNOTATION_NOISE_MODE}"
+    "data.annotation_noise_apply_to=${DATA_ANNOTATION_NOISE_APPLY_TO}"
     "data.suffix_fallback=${DATA_SUFFIX_FALLBACK}"
     "data.storage_format=${DATA_STORAGE_FORMAT}"
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"

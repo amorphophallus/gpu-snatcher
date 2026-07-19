@@ -20,6 +20,8 @@ NUM_DATA="100"
 EPOCH=""
 N_ENVS=3
 N_ROLLOUTS=12
+RANDOMNESS="med"
+MAX_SAVED_ROLLOUTS=0
 VISUALIZE=false
 DEBUG=false
 CONDA_ENV="rr"
@@ -35,45 +37,17 @@ EVAL_SKILL_ON_IMAGE=false
 EVAL_GUIDANCE_POINT_COLORED=false
 EVAL_GRASP_ANNOTATION_COLORED=false
 EVAL_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
+EVAL_ANNOTATION_NOISE_POS_STD_M="0"
+EVAL_ANNOTATION_NOISE_ORI_STD_DEG="0"
+EVAL_ANNOTATION_NOISE_SEED="0"
+EVAL_ANNOTATION_NOISE_MODE="gaussian_clip_2sigma"
+EVAL_ANNOTATION_NOISE_APPLY_TO="all"  # point, grasp, all
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
 ROLLOUT_SUFFIX_MODEL_NAME=""
 OVERWRITE_WT_PATH=""  # 如果设置，直接使用此路径作为 --wt-path，跳过自动拼接和下载步骤
 
-PARAMS=(
-    --if-exists append
-    --max-rollout-steps 1000
-    --action-type pos
-    --observation-space image
-    --randomness med
-    --save-rollouts
-    --save-failures
-    --save-depth-image  # disabled for state-based eval
-)
-if [[ "$EVAL_ANNOTATE_SKILL" == "true" ]]; then
-    PARAMS+=(--annotate-skill)
-fi
-if [[ "$EVAL_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
-    PARAMS+=(--guidance-point-on-image)
-fi
-if [[ "$EVAL_GRASP_ANNOTATION_ON_IMAGE" == "true" ]]; then
-    PARAMS+=(--grasp-annotation-on-image)
-fi
-if [[ "$EVAL_GRASP_PART_ANNOTATE" == "true" ]]; then
-    PARAMS+=(--grasp-part-annotate)
-fi
-if [[ "$EVAL_GUIDANCE_POINT_COLORED" == "true" ]]; then
-    PARAMS+=(--guidance-point-colored)
-fi
-if [[ "$EVAL_GRASP_ANNOTATION_COLORED" == "true" ]]; then
-    PARAMS+=(--grasp-annotation-colored)
-fi
-if [[ "$EVAL_ANNOTATE_SKILL" == "true" && "$EVAL_SKILL_ON_IMAGE" == "true" ]]; then
-    PARAMS+=(--skill-on-image)
-fi
-if [[ "$EVAL_PERTURB_MODE" != "none" ]]; then
-    PARAMS+=(--perturb-mode "$EVAL_PERTURB_MODE")
-fi
+PARAMS=()
 
 log_info() {
     printf '[%s] INFO %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -103,6 +77,55 @@ validate_annotation_flags() {
     fi
     if [[ "$EVAL_GRASP_ANNOTATION_COLORED" == "true" && "$EVAL_GRASP_ANNOTATION_ON_IMAGE" != "true" && "$EVAL_GRASP_PART_ANNOTATE" != "true" ]]; then
         die "EVAL_GRASP_ANNOTATION_COLORED=true requires EVAL_GRASP_ANNOTATION_ON_IMAGE=true or EVAL_GRASP_PART_ANNOTATE=true"
+    fi
+}
+
+build_params() {
+    PARAMS=(
+        --if-exists append
+        --max-rollout-steps 1000
+        --action-type pos
+        --observation-space image
+        --randomness "$RANDOMNESS"
+        --save-rollouts
+        --save-failures
+        --save-depth-image  # disabled for state-based eval
+    )
+    if [[ "$MAX_SAVED_ROLLOUTS" != "0" ]]; then
+        PARAMS+=(--max-saved-rollouts "$MAX_SAVED_ROLLOUTS")
+    fi
+    if [[ "$EVAL_ANNOTATE_SKILL" == "true" ]]; then
+        PARAMS+=(--annotate-skill)
+    fi
+    if [[ "$EVAL_GUIDANCE_POINT_ON_IMAGE" == "true" ]]; then
+        PARAMS+=(--guidance-point-on-image)
+    fi
+    if [[ "$EVAL_GRASP_ANNOTATION_ON_IMAGE" == "true" ]]; then
+        PARAMS+=(--grasp-annotation-on-image)
+    fi
+    if [[ "$EVAL_GRASP_PART_ANNOTATE" == "true" ]]; then
+        PARAMS+=(--grasp-part-annotate)
+    fi
+    if [[ "$EVAL_GUIDANCE_POINT_COLORED" == "true" ]]; then
+        PARAMS+=(--guidance-point-colored)
+    fi
+    if [[ "$EVAL_GRASP_ANNOTATION_COLORED" == "true" ]]; then
+        PARAMS+=(--grasp-annotation-colored)
+    fi
+    if [[ "$EVAL_ANNOTATE_SKILL" == "true" && "$EVAL_SKILL_ON_IMAGE" == "true" ]]; then
+        PARAMS+=(--skill-on-image)
+    fi
+    if [[ "$EVAL_PERTURB_MODE" != "none" ]]; then
+        PARAMS+=(--perturb-mode "$EVAL_PERTURB_MODE")
+    fi
+    if [[ "$EVAL_ANNOTATION_NOISE_POS_STD_M" != "0" || "$EVAL_ANNOTATION_NOISE_ORI_STD_DEG" != "0" ]]; then
+        PARAMS+=(
+            --annotation-noise-pos-std-m "$EVAL_ANNOTATION_NOISE_POS_STD_M"
+            --annotation-noise-ori-std-deg "$EVAL_ANNOTATION_NOISE_ORI_STD_DEG"
+            --annotation-noise-seed "$EVAL_ANNOTATION_NOISE_SEED"
+            --annotation-noise-mode "$EVAL_ANNOTATION_NOISE_MODE"
+            --annotation-noise-apply-to "$EVAL_ANNOTATION_NOISE_APPLY_TO"
+        )
     fi
 }
 
@@ -553,10 +576,38 @@ eval_step() {
 
 print_usage() {
     cat <<'USAGE'
-Usage: auto_eval.sh [--rollout-suffix-model-name NAME]
+Usage: auto_eval.sh [options]
 
 Options:
   --rollout-suffix-model-name NAME  Value passed to evaluator; defaults to local checkpoint filename stem.
+  --steps "download eval"           Override STEPS for this invocation.
+  --run-id NAME                     Override RUN_ID for this invocation.
+  --project NAME                    Override PROJECT for this invocation.
+  --task NAME                       Override TASK, e.g. one_leg+round_table+lamp.
+  --remote-ssh-host HOST            Override REMOTE_SSH_HOST.
+  --checkpoint-pattern PATTERN      Override CHECKPOINT_PATTERN.
+  --epoch EPOCH                     Override EPOCH suffix filter.
+  --n-envs N                        Override N_ENVS.
+  --n-rollouts N                    Override N_ROLLOUTS.
+  --randomness low|med|high         Override eval randomness.
+  --max-saved-rollouts N            Save at most N rollout trajectories per task.
+  --gpu-id ID                       Override GPU_ID.
+  --overwrite-wt-path PATH          Override local checkpoint path and skip download.
+  --noise-pos-std-m VALUE           Override annotation noise position std in meters.
+  --noise-ori-std-deg VALUE         Override annotation noise orientation std in degrees.
+  --noise-seed SEED                 Override annotation noise seed.
+  --noise-mode MODE                 Override annotation noise mode.
+  --noise-apply-to point|grasp|all  Override annotation noise target.
+  --annotate-skill                  Enable skill annotation.
+  --no-annotate-skill               Disable skill annotation.
+  --guidance-point-on-image         Enable guidance point overlay.
+  --grasp-annotation-on-image       Enable grasp annotation overlay.
+  --grasp-part-annotate             Enable grasp-part annotation mode.
+  --skill-on-image                  Enable skill label overlay.
+  --guidance-point-colored          Enable colored guidance point annotation.
+  --grasp-annotation-colored        Enable colored grasp annotation.
+  --visualize                       Enable evaluator visualization.
+  --debug                           Enable evaluator debug mode.
   -h, --help                        Show this help.
 USAGE
 }
@@ -564,10 +615,158 @@ USAGE
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --steps)
+                shift
+                [[ $# -gt 0 ]] || die "--steps requires a value"
+                read -r -a STEPS <<< "$1"
+                shift
+                ;;
+            --run-id)
+                shift
+                [[ $# -gt 0 ]] || die "--run-id requires a value"
+                RUN_ID="$1"
+                shift
+                ;;
+            --project)
+                shift
+                [[ $# -gt 0 ]] || die "--project requires a value"
+                PROJECT="$1"
+                shift
+                ;;
+            --task)
+                shift
+                [[ $# -gt 0 ]] || die "--task requires a value"
+                TASK="$1"
+                shift
+                ;;
+            --remote-ssh-host)
+                shift
+                [[ $# -gt 0 ]] || die "--remote-ssh-host requires a value"
+                REMOTE_SSH_HOST="$1"
+                shift
+                ;;
+            --checkpoint-pattern)
+                shift
+                [[ $# -gt 0 ]] || die "--checkpoint-pattern requires a value"
+                CHECKPOINT_PATTERN="$1"
+                shift
+                ;;
+            --epoch)
+                shift
+                [[ $# -gt 0 ]] || die "--epoch requires a value"
+                EPOCH="$1"
+                shift
+                ;;
+            --n-envs)
+                shift
+                [[ $# -gt 0 ]] || die "--n-envs requires a value"
+                N_ENVS="$1"
+                shift
+                ;;
+            --n-rollouts)
+                shift
+                [[ $# -gt 0 ]] || die "--n-rollouts requires a value"
+                N_ROLLOUTS="$1"
+                shift
+                ;;
+            --randomness)
+                shift
+                [[ $# -gt 0 ]] || die "--randomness requires a value"
+                RANDOMNESS="$1"
+                shift
+                ;;
+            --max-saved-rollouts)
+                shift
+                [[ $# -gt 0 ]] || die "--max-saved-rollouts requires a value"
+                MAX_SAVED_ROLLOUTS="$1"
+                shift
+                ;;
+            --gpu-id)
+                shift
+                [[ $# -gt 0 ]] || die "--gpu-id requires a value"
+                GPU_ID="$1"
+                shift
+                ;;
+            --overwrite-wt-path)
+                shift
+                [[ $# -gt 0 ]] || die "--overwrite-wt-path requires a value"
+                OVERWRITE_WT_PATH="$1"
+                shift
+                ;;
             --rollout-suffix-model-name)
                 shift
                 [[ $# -gt 0 ]] || die "--rollout-suffix-model-name requires a value"
                 ROLLOUT_SUFFIX_MODEL_NAME="$1"
+                shift
+                ;;
+            --noise-pos-std-m)
+                shift
+                [[ $# -gt 0 ]] || die "--noise-pos-std-m requires a value"
+                EVAL_ANNOTATION_NOISE_POS_STD_M="$1"
+                shift
+                ;;
+            --noise-ori-std-deg)
+                shift
+                [[ $# -gt 0 ]] || die "--noise-ori-std-deg requires a value"
+                EVAL_ANNOTATION_NOISE_ORI_STD_DEG="$1"
+                shift
+                ;;
+            --noise-seed)
+                shift
+                [[ $# -gt 0 ]] || die "--noise-seed requires a value"
+                EVAL_ANNOTATION_NOISE_SEED="$1"
+                shift
+                ;;
+            --noise-mode)
+                shift
+                [[ $# -gt 0 ]] || die "--noise-mode requires a value"
+                EVAL_ANNOTATION_NOISE_MODE="$1"
+                shift
+                ;;
+            --noise-apply-to)
+                shift
+                [[ $# -gt 0 ]] || die "--noise-apply-to requires a value"
+                EVAL_ANNOTATION_NOISE_APPLY_TO="$1"
+                shift
+                ;;
+            --annotate-skill)
+                EVAL_ANNOTATE_SKILL=true
+                shift
+                ;;
+            --no-annotate-skill)
+                EVAL_ANNOTATE_SKILL=false
+                shift
+                ;;
+            --guidance-point-on-image)
+                EVAL_GUIDANCE_POINT_ON_IMAGE=true
+                shift
+                ;;
+            --grasp-annotation-on-image)
+                EVAL_GRASP_ANNOTATION_ON_IMAGE=true
+                shift
+                ;;
+            --grasp-part-annotate)
+                EVAL_GRASP_PART_ANNOTATE=true
+                shift
+                ;;
+            --skill-on-image)
+                EVAL_SKILL_ON_IMAGE=true
+                shift
+                ;;
+            --guidance-point-colored)
+                EVAL_GUIDANCE_POINT_COLORED=true
+                shift
+                ;;
+            --grasp-annotation-colored)
+                EVAL_GRASP_ANNOTATION_COLORED=true
+                shift
+                ;;
+            --visualize)
+                VISUALIZE=true
+                shift
+                ;;
+            --debug)
+                DEBUG=true
                 shift
                 ;;
             -h|--help)
@@ -589,6 +788,7 @@ main() {
 
     parse_args "$@"
     validate_annotation_flags
+    build_params
 
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
@@ -605,6 +805,12 @@ main() {
     if [[ -z "$rollout_suffix_model_name" ]]; then
         rollout_suffix_model_name="$(basename -- "$local_checkpoint")"
         rollout_suffix_model_name="${rollout_suffix_model_name%.*}"
+    fi
+    if [[ "$EVAL_ANNOTATION_NOISE_POS_STD_M" != "0" || "$EVAL_ANNOTATION_NOISE_ORI_STD_DEG" != "0" ]]; then
+        local pos_tag ori_tag
+        pos_tag="${EVAL_ANNOTATION_NOISE_POS_STD_M//./p}"
+        ori_tag="${EVAL_ANNOTATION_NOISE_ORI_STD_DEG//./p}"
+        rollout_suffix_model_name="${rollout_suffix_model_name}_noise_pos${pos_tag}_ori${ori_tag}_seed${EVAL_ANNOTATION_NOISE_SEED}"
     fi
 
     if [[ ${#STEPS[@]} -eq 0 ]]; then

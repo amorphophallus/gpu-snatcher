@@ -83,6 +83,11 @@ COLLECT_SKILL_ON_IMAGE=false  # 是否把 skill 标注到图片上,只影响输�
 COLLECT_GUIDANCE_POINT_COLORED=false  # 是否使用彩色引导点 (yellow=pick/screw, red=place/push/insert)
 COLLECT_GRASP_ANNOTATION_COLORED=false
 COLLECT_PERTURB_MODE="none"  # none, random_small, short_large, place_slowdown
+COLLECT_ANNOTATION_NOISE_POS_STD_M="0"
+COLLECT_ANNOTATION_NOISE_ORI_STD_DEG="0"
+COLLECT_ANNOTATION_NOISE_SEED="0"
+COLLECT_ANNOTATION_NOISE_MODE="gaussian_clip_2sigma"
+COLLECT_ANNOTATION_NOISE_APPLY_TO="all"  # point, grasp, all
 
 # 等比例配置数据
 declare -A TASK_EPISODE_LIMIT=(
@@ -127,6 +132,11 @@ COLLECT_SKILL_ON_IMAGE="${COLLECT_SKILL_ON_IMAGE_OVERRIDE:-$COLLECT_SKILL_ON_IMA
 COLLECT_GUIDANCE_POINT_COLORED="${COLLECT_GUIDANCE_POINT_COLORED_OVERRIDE:-$COLLECT_GUIDANCE_POINT_COLORED}"
 COLLECT_GRASP_ANNOTATION_COLORED="${COLLECT_GRASP_ANNOTATION_COLORED_OVERRIDE:-$COLLECT_GRASP_ANNOTATION_COLORED}"
 COLLECT_PERTURB_MODE="${COLLECT_PERTURB_MODE_OVERRIDE:-$COLLECT_PERTURB_MODE}"
+COLLECT_ANNOTATION_NOISE_POS_STD_M="${COLLECT_ANNOTATION_NOISE_POS_STD_M_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_POS_STD_M}"
+COLLECT_ANNOTATION_NOISE_ORI_STD_DEG="${COLLECT_ANNOTATION_NOISE_ORI_STD_DEG_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_ORI_STD_DEG}"
+COLLECT_ANNOTATION_NOISE_SEED="${COLLECT_ANNOTATION_NOISE_SEED_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_SEED}"
+COLLECT_ANNOTATION_NOISE_MODE="${COLLECT_ANNOTATION_NOISE_MODE_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_MODE}"
+COLLECT_ANNOTATION_NOISE_APPLY_TO="${COLLECT_ANNOTATION_NOISE_APPLY_TO_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_APPLY_TO}"
 PROCESS_BATCH_SIZE="${PROCESS_BATCH_SIZE_OVERRIDE:-2}"
 UPLOAD_RELATIVE_DIR="${UPLOAD_RELATIVE_DIR_OVERRIDE:-data/processed/diffik/sim}"
 
@@ -194,7 +204,68 @@ build_collect_suffix() {
     printf 'rgbd\n'
 }
 
+format_noise_component() {
+    python3 - "$1" "$2" <<'PY'
+import math
+import re
+import sys
+
+prefix = sys.argv[1]
+value = float(sys.argv[2])
+if not math.isfinite(value):
+    raise SystemExit(f"{prefix} noise value must be finite, got {value!r}")
+text = f"{value:g}".replace("-", "m").replace(".", "p")
+text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+print(f"{prefix}{text}")
+PY
+}
+
+sanitize_suffix_component() {
+    python3 - "$1" <<'PY'
+import re
+import sys
+
+text = sys.argv[1].strip()
+text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+print(text.strip("_") or "unknown")
+PY
+}
+
+build_noise_suffix() {
+    local pos_std_m="$1"
+    local ori_std_deg="$2"
+    local mode="$3"
+    local apply_to="$4"
+    local seed="$5"
+    local pos_mm
+    local nonzero
+
+    nonzero="$(python3 - "$pos_std_m" "$ori_std_deg" <<'PY'
+import sys
+print("1" if float(sys.argv[1]) != 0.0 or float(sys.argv[2]) != 0.0 else "0")
+PY
+)"
+    if [[ "$nonzero" == "0" ]]; then
+        printf '%s\n' ""
+        return
+    fi
+
+    pos_mm="$(python3 - "$pos_std_m" <<'PY'
+import sys
+print(float(sys.argv[1]) * 1000.0)
+PY
+)"
+    printf 'noise-%s-%s-mode%s-apply%s-seed%s\n' \
+        "$(format_noise_component pos "$pos_mm")" \
+        "$(format_noise_component ori "$ori_std_deg")" \
+        "$(sanitize_suffix_component "$mode")" \
+        "$(sanitize_suffix_component "$apply_to")" \
+        "$seed"
+}
+
 validate_collect_annotation_mode
+
+NOISE_SUFFIX="$(build_noise_suffix "$COLLECT_ANNOTATION_NOISE_POS_STD_M" "$COLLECT_ANNOTATION_NOISE_ORI_STD_DEG" "$COLLECT_ANNOTATION_NOISE_MODE" "$COLLECT_ANNOTATION_NOISE_APPLY_TO" "$COLLECT_ANNOTATION_NOISE_SEED")"
 
 COLLECT_FLAGS=(
     --save-rollouts
@@ -225,6 +296,15 @@ fi
 if [[ "$COLLECT_PERTURB_MODE" != "none" ]]; then
     COLLECT_FLAGS+=(--perturb-mode "$COLLECT_PERTURB_MODE")
 fi
+if [[ -n "$NOISE_SUFFIX" ]]; then
+    COLLECT_FLAGS+=(
+        --annotation-noise-pos-std-m "$COLLECT_ANNOTATION_NOISE_POS_STD_M"
+        --annotation-noise-ori-std-deg "$COLLECT_ANNOTATION_NOISE_ORI_STD_DEG"
+        --annotation-noise-seed "$COLLECT_ANNOTATION_NOISE_SEED"
+        --annotation-noise-mode "$COLLECT_ANNOTATION_NOISE_MODE"
+        --annotation-noise-apply-to "$COLLECT_ANNOTATION_NOISE_APPLY_TO"
+    )
+fi
 
 PROCESS_CONTROLLER="diffik"
 PROCESS_DOMAIN="sim"
@@ -233,6 +313,12 @@ PROCESS_RANDOMNESS="low"
 PROCESS_OUTCOME="success"
 PROCESS_SUFFIX="$(build_collect_suffix)"
 PROCESS_OUTPUT_SUFFIX="$PROCESS_SUFFIX"
+if [[ -n "$NOISE_SUFFIX" ]]; then
+    PROCESS_OUTPUT_SUFFIX="${PROCESS_OUTPUT_SUFFIX}-${NOISE_SUFFIX}"
+fi
+PROCESS_OUTPUT_SUFFIX="${PROCESS_OUTPUT_SUFFIX_OVERRIDE:-$PROCESS_OUTPUT_SUFFIX}"
+PROCESS_SUFFIX="$PROCESS_OUTPUT_SUFFIX"
+PROCESS_SUFFIX="${PROCESS_SUFFIX_OVERRIDE:-$PROCESS_SUFFIX}"
 RUNTIME_TMP_ROOT="${RUNTIME_TMP_ROOT:-/home/hy/tmp}"  # local tmp, NOT NAS
 PYTHON_RUNTIME_CACHE_ROOT="${PYTHON_RUNTIME_CACHE_ROOT:-${RUNTIME_TMP_ROOT}/gpu-snatcher-auto-data-preparation}"
 
@@ -948,6 +1034,7 @@ collect_data_step() {
             --randomness "$COLLECT_RANDOMNESS"
             --wt-path "$checkpoint_path"
             "${COLLECT_FLAGS[@]}"
+            --save-rollouts-suffix "$PROCESS_OUTPUT_SUFFIX"
             --rollout-after-success "$rollout_after_success"
         )
 
