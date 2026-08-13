@@ -7,6 +7,14 @@ Simple helper scripts for checking ZJU GPU servers, starting single-card or mult
 - `check_zju_gpu.ps1` / `check_zju_gpu.sh`
   Check whether each `zju_*` server is reachable and which GPUs are free. A GPU is treated as available when memory usage is below 10%.
 
+- `reserve_gpu.sh` / `gpu_reservation_worker.py`
+  Reserve one explicitly selected remote GPU by holding CUDA tensor memory. The
+  worker monitors NVIDIA compute-process PIDs and automatically releases its
+  own memory and exits when another process owned by the configured user
+  (default `hy`) appears on that GPU. It never kills another process. Use the
+  explicit `release` action before starting a planned large job to avoid an OOM
+  race during model startup.
+
 - `auto_train_single_card.ps1` / `auto_train_single_card.sh`
   Find one free GPU, replace `training.gpu_id=` in `TRAIN_COMMAND`, start the command in a remote `tmux` session, and return structured status. Both the PowerShell and Bash scripts expose switchable `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, and optional `DATA_PATHS_OVERRIDE` globals for LMDB/Zarr dataset selection.
 
@@ -40,12 +48,43 @@ Bash:
 
 ```bash
 ./check_zju_gpu.sh
+./reserve_gpu.sh status --host zju_4090_240 --gpu 0
+./reserve_gpu.sh start --host zju_4090_240 --gpu 0 --dry-run
+./reserve_gpu.sh release --host zju_4090_240 --gpu 0
 ./auto_train_single_card.sh
 ./auto_train_multi_card.sh
 ./cleanup_auto_train_sessions.sh
 ./auto_eval.sh
 ./auto_data_preparation.sh
 ./auto_data_preparation_zarr.sh
+```
+
+Reserve a specific GPU after reviewing the dry run:
+
+```bash
+./reserve_gpu.sh start \
+  --host zju_4090_240 \
+  --gpu 0 \
+  --target-ratio 0.95 \
+  --headroom-mib 1024 \
+  --yield-user hy \
+  --dry-run
+
+# Remove --dry-run only after approval.
+./reserve_gpu.sh start \
+  --host zju_4090_240 \
+  --gpu 0 \
+  --target-ratio 0.95 \
+  --headroom-mib 1024 \
+  --yield-user hy
+```
+
+The automatic yield path detects a new CUDA process after it creates a GPU
+context. A large model may attempt a large allocation immediately after context
+creation, so planned work should always release the reservation first:
+
+```bash
+./reserve_gpu.sh release --host zju_4090_240 --gpu 0
 ```
 
 Before running `auto_train_single_card`, edit the globals at the top of the script such as `TRAIN_COMMAND`, `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, `DATA_PATHS_OVERRIDE` (optional explicit dataset path override), `SSH_NAME` (optional), `GPU_ID` (optional single GPU id), and `DATA_DIR_PROCESSED` when needed. The default PowerShell and Bash configurations use LMDB with lazy loading.
