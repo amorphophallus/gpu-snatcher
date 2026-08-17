@@ -21,9 +21,11 @@ EPOCH=""
 N_ENVS=3
 N_ROLLOUTS=12
 RANDOMNESS="med"
+MAX_ROLLOUT_STEPS=1000
 MAX_SAVED_ROLLOUTS=0
 VISUALIZE=false
 DEBUG=false
+PRINT_COMMAND=false
 CONDA_ENV="rr"
 CHECKPOINT_PATTERN="*last*.pt"
 GPU_ID=0
@@ -42,6 +44,13 @@ EVAL_ANNOTATION_NOISE_ORI_STD_DEG="0"
 EVAL_ANNOTATION_NOISE_SEED="0"
 EVAL_ANNOTATION_NOISE_MODE="gaussian_clip_2sigma"
 EVAL_ANNOTATION_NOISE_APPLY_TO="all"  # point, grasp, all
+EVAL_ANNOTATION_SOURCE="scripted"
+EVAL_TRACKING_METRIC_TYPE=""
+EVAL_VLM_BASE_URL="${VLM_GUIDANCE_URL:-}"
+EVAL_VLM_TIMEOUT_SECONDS="10"
+EVAL_VLM_QUERY_INTERVAL="0"
+EVAL_VLM_NOISE_PROJECTION_SAMPLES=""
+EVAL_TASK_SUMMARY_OUT=""
 
 # Optional CLI override. If empty, it is derived from the local checkpoint filename (without extension).
 ROLLOUT_SUFFIX_MODEL_NAME=""
@@ -80,17 +89,61 @@ validate_annotation_flags() {
     fi
 }
 
+validate_eval_options() {
+    [[ "$N_ENVS" =~ ^[1-9][0-9]*$ ]] || die "--n-envs must be a positive integer"
+    [[ "$N_ROLLOUTS" =~ ^[1-9][0-9]*$ ]] || die "--n-rollouts must be a positive integer"
+    [[ "$MAX_ROLLOUT_STEPS" =~ ^[1-9][0-9]*$ ]] || die "--max-rollout-steps must be a positive integer"
+
+    case "$EVAL_ANNOTATION_SOURCE" in
+        scripted|vlm) ;;
+        *) die "--annotation-source must be scripted or vlm" ;;
+    esac
+
+    if [[ -n "$EVAL_TRACKING_METRIC_TYPE" ]]; then
+        case "$EVAL_TRACKING_METRIC_TYPE" in
+            auto|position|pose) ;;
+            *) die "--tracking-metric-type must be auto, position, or pose" ;;
+        esac
+    fi
+
+    if [[ "$EVAL_ANNOTATION_SOURCE" == "vlm" ]]; then
+        [[ -n "${EVAL_VLM_BASE_URL// }" ]] || die "--annotation-source vlm requires --vlm-base-url or VLM_GUIDANCE_URL"
+        [[ "$EVAL_VLM_TIMEOUT_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ && "$EVAL_VLM_TIMEOUT_SECONDS" =~ [1-9] ]] || die "--vlm-timeout-seconds must be a positive number"
+        [[ "$EVAL_VLM_QUERY_INTERVAL" =~ ^[0-9]+$ ]] || die "--vlm-query-interval must be a non-negative integer"
+        if [[ -n "$EVAL_VLM_NOISE_PROJECTION_SAMPLES" ]]; then
+            [[ "$EVAL_VLM_NOISE_PROJECTION_SAMPLES" =~ ^[1-9][0-9]*$ ]] || die "--vlm-noise-projection-samples must be a positive integer"
+        fi
+    fi
+}
+
 build_params() {
     PARAMS=(
         --if-exists append
-        --max-rollout-steps 1000
+        --max-rollout-steps "$MAX_ROLLOUT_STEPS"
         --action-type pos
         --observation-space image
         --randomness "$RANDOMNESS"
         --save-rollouts
         --save-failures
-        --save-depth-image  # disabled for state-based eval
+        --save-depth-image
+        --annotation-source "$EVAL_ANNOTATION_SOURCE"
     )
+    if [[ -n "$EVAL_TRACKING_METRIC_TYPE" ]]; then
+        PARAMS+=(--tracking-metric-type "$EVAL_TRACKING_METRIC_TYPE")
+    fi
+    if [[ "$EVAL_ANNOTATION_SOURCE" == "vlm" ]]; then
+        PARAMS+=(
+            --vlm-base-url "$EVAL_VLM_BASE_URL"
+            --vlm-timeout-seconds "$EVAL_VLM_TIMEOUT_SECONDS"
+            --vlm-query-interval "$EVAL_VLM_QUERY_INTERVAL"
+        )
+        if [[ -n "$EVAL_VLM_NOISE_PROJECTION_SAMPLES" ]]; then
+            PARAMS+=(--vlm-noise-projection-samples "$EVAL_VLM_NOISE_PROJECTION_SAMPLES")
+        fi
+    fi
+    if [[ -n "$EVAL_TASK_SUMMARY_OUT" ]]; then
+        PARAMS+=(--task-summary-out "$EVAL_TASK_SUMMARY_OUT")
+    fi
     if [[ "$MAX_SAVED_ROLLOUTS" != "0" ]]; then
         PARAMS+=(--max-saved-rollouts "$MAX_SAVED_ROLLOUTS")
     fi
@@ -563,10 +616,17 @@ eval_step() {
 
     log_info "Running evaluation in ${local_root}"
     log_info "Evaluation command: $(quote_command "${eval_cmd[@]}")"
+    if [[ "$PRINT_COMMAND" == "true" ]]; then
+        quote_command "${eval_cmd[@]}"
+        return 0
+    fi
+    if [[ -n "$EVAL_TASK_SUMMARY_OUT" ]]; then
+        mkdir -p "$(dirname -- "$EVAL_TASK_SUMMARY_OUT")"
+    fi
     (
         cd "$local_root"
         activate_conda_env "$CONDA_ENV"
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/hy/anaconda3/envs/rr/lib
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:/home/hy/anaconda3/envs/rr/lib"
         export CUDA_VISIBLE_DEVICES="$GPU_ID"
         export DATA_DIR_RAW="$DATA_DIR_RAW"
         "${eval_cmd[@]}"
@@ -583,6 +643,7 @@ Options:
   --steps "download eval"           Override STEPS for this invocation.
   --run-id NAME                     Override RUN_ID for this invocation.
   --project NAME                    Override PROJECT for this invocation.
+  --local-path PATH                 Robust Rearrangement checkout used for evaluation.
   --task NAME                       Override TASK, e.g. one_leg+round_table+lamp.
   --remote-ssh-host HOST            Override REMOTE_SSH_HOST.
   --checkpoint-pattern PATTERN      Override CHECKPOINT_PATTERN.
@@ -590,6 +651,7 @@ Options:
   --n-envs N                        Override N_ENVS.
   --n-rollouts N                    Override N_ROLLOUTS.
   --randomness low|med|high         Override eval randomness.
+  --max-rollout-steps N             Override the per-rollout step limit.
   --max-saved-rollouts N            Save at most N rollout trajectories per task.
   --gpu-id ID                       Override GPU_ID.
   --overwrite-wt-path PATH          Override local checkpoint path and skip download.
@@ -598,6 +660,13 @@ Options:
   --noise-seed SEED                 Override annotation noise seed.
   --noise-mode MODE                 Override annotation noise mode.
   --noise-apply-to point|grasp|all  Override annotation noise target.
+  --annotation-source scripted|vlm  Select the policy annotation source.
+  --tracking-metric-type TYPE       Optional: auto, position, or pose.
+  --vlm-base-url URL                VLM guidance service base URL.
+  --vlm-timeout-seconds SECONDS     VLM request timeout.
+  --vlm-query-interval N            VLM query interval; 0 follows action horizon.
+  --vlm-noise-projection-samples N  Optional projected-noise samples per query.
+  --task-summary-out PATH           Write the evaluator JSON summary to PATH.
   --annotate-skill                  Enable skill annotation.
   --no-annotate-skill               Disable skill annotation.
   --guidance-point-on-image         Enable guidance point overlay.
@@ -608,6 +677,7 @@ Options:
   --grasp-annotation-colored        Enable colored grasp annotation.
   --visualize                       Enable evaluator visualization.
   --debug                           Enable evaluator debug mode.
+  --print-command                   Print the expanded evaluator command and exit.
   -h, --help                        Show this help.
 USAGE
 }
@@ -631,6 +701,12 @@ parse_args() {
                 shift
                 [[ $# -gt 0 ]] || die "--project requires a value"
                 PROJECT="$1"
+                shift
+                ;;
+            --local-path)
+                shift
+                [[ $# -gt 0 ]] || die "--local-path requires a value"
+                LOCAL_PATH="$1"
                 shift
                 ;;
             --task)
@@ -673,6 +749,12 @@ parse_args() {
                 shift
                 [[ $# -gt 0 ]] || die "--randomness requires a value"
                 RANDOMNESS="$1"
+                shift
+                ;;
+            --max-rollout-steps)
+                shift
+                [[ $# -gt 0 ]] || die "--max-rollout-steps requires a value"
+                MAX_ROLLOUT_STEPS="$1"
                 shift
                 ;;
             --max-saved-rollouts)
@@ -729,6 +811,48 @@ parse_args() {
                 EVAL_ANNOTATION_NOISE_APPLY_TO="$1"
                 shift
                 ;;
+            --annotation-source)
+                shift
+                [[ $# -gt 0 ]] || die "--annotation-source requires a value"
+                EVAL_ANNOTATION_SOURCE="$1"
+                shift
+                ;;
+            --tracking-metric-type)
+                shift
+                [[ $# -gt 0 ]] || die "--tracking-metric-type requires a value"
+                EVAL_TRACKING_METRIC_TYPE="$1"
+                shift
+                ;;
+            --vlm-base-url)
+                shift
+                [[ $# -gt 0 ]] || die "--vlm-base-url requires a value"
+                EVAL_VLM_BASE_URL="$1"
+                shift
+                ;;
+            --vlm-timeout-seconds)
+                shift
+                [[ $# -gt 0 ]] || die "--vlm-timeout-seconds requires a value"
+                EVAL_VLM_TIMEOUT_SECONDS="$1"
+                shift
+                ;;
+            --vlm-query-interval)
+                shift
+                [[ $# -gt 0 ]] || die "--vlm-query-interval requires a value"
+                EVAL_VLM_QUERY_INTERVAL="$1"
+                shift
+                ;;
+            --vlm-noise-projection-samples)
+                shift
+                [[ $# -gt 0 ]] || die "--vlm-noise-projection-samples requires a value"
+                EVAL_VLM_NOISE_PROJECTION_SAMPLES="$1"
+                shift
+                ;;
+            --task-summary-out)
+                shift
+                [[ $# -gt 0 ]] || die "--task-summary-out requires a value"
+                EVAL_TASK_SUMMARY_OUT="$1"
+                shift
+                ;;
             --annotate-skill)
                 EVAL_ANNOTATE_SKILL=true
                 shift
@@ -769,6 +893,10 @@ parse_args() {
                 DEBUG=true
                 shift
                 ;;
+            --print-command)
+                PRINT_COMMAND=true
+                shift
+                ;;
             -h|--help)
                 print_usage
                 exit 0
@@ -788,13 +916,18 @@ main() {
 
     parse_args "$@"
     validate_annotation_flags
+    validate_eval_options
+
+    if [[ -n "$EVAL_TASK_SUMMARY_OUT" ]]; then
+        EVAL_TASK_SUMMARY_OUT="$(expand_path "$EVAL_TASK_SUMMARY_OUT")"
+    fi
     build_params
 
     local_root="$(expand_path "$LOCAL_PATH")"
     [[ -d "$local_root" ]] || die "LOCAL_PATH does not exist: ${local_root}"
 
     if [[ -n "${OVERWRITE_WT_PATH// }" ]]; then
-        local_checkpoint="$OVERWRITE_WT_PATH"
+        local_checkpoint="$(expand_path "$OVERWRITE_WT_PATH")"
     else
         checkpoint_name_tag="$(checkpoint_pattern_to_name_tag "$CHECKPOINT_PATTERN")"
         destination_dir="${local_root}/checkpoints/bc/${TASK}/low"
