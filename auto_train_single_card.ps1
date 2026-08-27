@@ -51,9 +51,11 @@ if ($global:DATA_ANNOTATE_GUIDANCE_POINT -eq "true") {
 
 # 单卡训练命令
 $global:TRAIN_COMMAND_PARTS = @(
-    "python",
+    "torchrun",
+    "--standalone",
+    "--nproc_per_node=1",
     "-m",
-    "src.train.bc",
+    "src.train.bc_ddp",
     "+experiment=rgbd/diff_unet",
     "vision_encoder.pretrained=false",
     "task=[one_leg,round_table,lamp]",
@@ -67,13 +69,13 @@ $global:TRAIN_COMMAND_PARTS = @(
     "data.load_into_memory=$global:DATA_LOAD_INTO_MEMORY",
     "data.dataloader_workers=4",
     "data.data_subset=50",
+    "data.ddp_shard_enabled=false",
     "training.batch_size=256",
     "training.num_epochs=4000",
     "training.steps_per_epoch=-1",
     "training.save_per_epoch=1000",
     "wandb.project=multi-task-rgbd-skill-low",
     "wandb.mode=online",
-    "training.gpu_id=7",
     "randomness=low",
     "dryrun=false",
     "wandb.continue_run_id=e56mvprj"
@@ -447,11 +449,21 @@ function Prepare-TrainCommand {
         throw "TRAIN_COMMAND is empty."
     }
 
-    if ($command -match '(^|\s)training\.gpu_id=\S+') {
-        return [regex]::Replace($command, '(^|\s)training\.gpu_id=\S+', "`$1training.gpu_id=$GpuId", 1)
+    $updated = [regex]::Replace($command, '(^|\s)CUDA_VISIBLE_DEVICES=\S+', ' ')
+    $updated = [regex]::Replace($updated, '(^|\s)training\.gpu_id=\S+', ' ')
+    $updated = [regex]::Replace($updated, '(^|\s)--nproc_per_node(?:=\S+|\s+\S+)', ' ')
+    $updated = $updated.Trim()
+    if ($updated -notmatch '^torchrun(?:\s|$)') {
+        throw "TRAIN_COMMAND must start with torchrun for unified single-card training."
     }
 
-    return "$command training.gpu_id=$GpuId"
+    $updated = [regex]::Replace(
+        $updated,
+        '^torchrun(?=\s|$)',
+        'torchrun --nproc_per_node=1',
+        1
+    )
+    return "CUDA_VISIBLE_DEVICES=$GpuId $updated"
 }
 
 function Get-CommandName {

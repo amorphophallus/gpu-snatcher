@@ -68,6 +68,8 @@ Collect:
 
 Process/upload:
   --process-batch-size N
+  --frame-compression none|zstd
+  --frame-compression-level N
   --process-suffix SUFFIX
   --process-output-suffix SUFFIX
   --upload-relative-dir DIR
@@ -218,6 +220,14 @@ parse_args() {
                 ;;
             --process-batch-size)
                 PROCESS_BATCH_SIZE="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --frame-compression)
+                PROCESS_FRAME_COMPRESSION="${2:?Missing value for $1}"
+                shift 2
+                ;;
+            --frame-compression-level)
+                PROCESS_FRAME_COMPRESSION_LEVEL="${2:?Missing value for $1}"
                 shift 2
                 ;;
             --process-suffix)
@@ -375,6 +385,8 @@ COLLECT_ANNOTATION_NOISE_SEED="${COLLECT_ANNOTATION_NOISE_SEED_OVERRIDE:-$COLLEC
 COLLECT_ANNOTATION_NOISE_MODE="${COLLECT_ANNOTATION_NOISE_MODE_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_MODE}"
 COLLECT_ANNOTATION_NOISE_APPLY_TO="${COLLECT_ANNOTATION_NOISE_APPLY_TO_OVERRIDE:-$COLLECT_ANNOTATION_NOISE_APPLY_TO}"
 PROCESS_BATCH_SIZE="${PROCESS_BATCH_SIZE_OVERRIDE:-2}"
+PROCESS_FRAME_COMPRESSION="${PROCESS_FRAME_COMPRESSION_OVERRIDE:-zstd}"
+PROCESS_FRAME_COMPRESSION_LEVEL="${PROCESS_FRAME_COMPRESSION_LEVEL_OVERRIDE:-1}"
 UPLOAD_RELATIVE_DIR="${UPLOAD_RELATIVE_DIR_OVERRIDE:-data/processed/diffik/sim}"
 
 parse_args "$@"
@@ -1223,7 +1235,7 @@ import importlib
 import sys
 import traceback
 
-required_modules = ("lmdb",)
+required_modules = ("lmdb", "zstandard")
 failures = []
 
 for module_name in required_modules:
@@ -1239,7 +1251,7 @@ if failures:
         print(tb, file=sys.stderr)
     print(
         "Reinstall the broken package inside the target env, for example: "
-        "conda run -n rr python -m pip install --force-reinstall lmdb",
+        "conda run -n rr python -m pip install --force-reinstall lmdb zstandard",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -1301,6 +1313,8 @@ process_pickles_step() {
         --suffix "$PROCESS_SUFFIX"
         --output-suffix "$PROCESS_OUTPUT_SUFFIX"
         --batch-size "$PROCESS_BATCH_SIZE"
+        --frame-compression "$PROCESS_FRAME_COMPRESSION"
+        --frame-compression-level "$PROCESS_FRAME_COMPRESSION_LEVEL"
         --task-episode-limit "${task_episode_limit_args[@]}"
         "${PROCESS_FLAGS[@]}"
     )

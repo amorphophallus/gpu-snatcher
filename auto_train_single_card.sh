@@ -394,7 +394,6 @@ TRAIN_RANDOMNESS="low"
 TRAIN_DRYRUN="false"
 WANDB_PROJECT="multi-task-rgbd-skill-low-smalldot"
 WANDB_MODE="online"
-TRAIN_GPU_ID=0
 SSH_NAME="230"
 GPU_ID="0"
 # DATA_DIR_PROCESSED="/data/hy/robust-rearrangement-custom/data/"  # server local
@@ -431,7 +430,6 @@ TRAIN_RANDOMNESS="${TRAIN_RANDOMNESS_OVERRIDE:-$TRAIN_RANDOMNESS}"
 TRAIN_DRYRUN="${TRAIN_DRYRUN_OVERRIDE:-$TRAIN_DRYRUN}"
 WANDB_PROJECT="${WANDB_PROJECT_OVERRIDE:-$WANDB_PROJECT}"
 WANDB_MODE="${WANDB_MODE_OVERRIDE:-$WANDB_MODE}"
-TRAIN_GPU_ID="${TRAIN_GPU_ID_OVERRIDE:-$TRAIN_GPU_ID}"
 SSH_NAME="${SSH_NAME_OVERRIDE:-$SSH_NAME}"
 GPU_ID="${GPU_ID_OVERRIDE:-$GPU_ID}"
 DATA_DIR_PROCESSED="${DATA_DIR_PROCESSED_OVERRIDE:-$DATA_DIR_PROCESSED}"
@@ -448,9 +446,11 @@ DATA_SUFFIX="${DATA_SUFFIX_OVERRIDE:-$DATA_SUFFIX}"
 
 # Single-card training command.
 TRAIN_COMMAND_PARTS=(
-    python
+    torchrun
+    --standalone
+    --nproc_per_node=1
     -m
-    src.train.bc
+    src.train.bc_ddp
     "+experiment=${EXPERIMENT_NAME}"
     "vision_encoder.pretrained=${VISION_ENCODER_PRETRAINED}"
     "task=${TASK_SPEC}"
@@ -473,13 +473,13 @@ TRAIN_COMMAND_PARTS=(
     "data.load_into_memory=${DATA_LOAD_INTO_MEMORY}"
     "data.dataloader_workers=${DATA_DATALOADER_WORKERS}"
     "data.data_subset=${DATA_DATA_SUBSET}"
+    data.ddp_shard_enabled=false
     "training.batch_size=${TRAIN_BATCH_SIZE}"
     "training.num_epochs=${TRAIN_NUM_EPOCHS}"
     "training.steps_per_epoch=${TRAIN_STEPS_PER_EPOCH}"
     "training.save_per_epoch=${TRAIN_SAVE_PER_EPOCH}"
     "wandb.project=${WANDB_PROJECT}"
     "wandb.mode=${WANDB_MODE}"
-    "training.gpu_id=${TRAIN_GPU_ID}"
     "randomness=${TRAIN_RANDOMNESS}"
     "dryrun=${TRAIN_DRYRUN}"
 )
@@ -817,7 +817,9 @@ PY
 
 prepare_train_command() {
     python3 - "$TRAIN_COMMAND" "$1" <<'PY'
+import os
 import re
+import shlex
 import sys
 
 command = sys.argv[1].strip()
@@ -826,12 +828,41 @@ gpu_id = sys.argv[2]
 if not command:
     raise SystemExit("TRAIN_COMMAND is empty.")
 
-if re.search(r'(^|\s)training\.gpu_id=\S+', command):
-    updated = re.sub(r'(^|\s)training\.gpu_id=\S+', rf'\1training.gpu_id={gpu_id}', command, count=1)
-else:
-    updated = f"{command} training.gpu_id={gpu_id}"
+parts = shlex.split(command)
+env_parts = []
+env_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+index = 0
+while index < len(parts) and env_pattern.match(parts[index]) and not parts[index].startswith(("/", "./")):
+    if parts[index].split("=", 1)[0] != "CUDA_VISIBLE_DEVICES":
+        env_parts.append(parts[index])
+    index += 1
 
-print(updated)
+command_parts = parts[index:]
+if not command_parts or os.path.basename(command_parts[0]) != "torchrun":
+    raise SystemExit("TRAIN_COMMAND must start with torchrun for unified single-card training.")
+
+filtered_parts = []
+cursor = 0
+while cursor < len(command_parts):
+    token = command_parts[cursor]
+    if re.match(r"^training\.gpu_id=\S+$", token):
+        cursor += 1
+        continue
+    if token == "training.gpu_id":
+        cursor += 2 if cursor + 1 < len(command_parts) else 1
+        continue
+    if token == "--nproc_per_node":
+        cursor += 2 if cursor + 1 < len(command_parts) else 1
+        continue
+    if token.startswith("--nproc_per_node="):
+        cursor += 1
+        continue
+    filtered_parts.append(token)
+    cursor += 1
+
+updated_parts = [filtered_parts[0], "--nproc_per_node=1", *filtered_parts[1:]]
+final_parts = [f"CUDA_VISIBLE_DEVICES={gpu_id}", *env_parts, *updated_parts]
+print(shlex.join(final_parts))
 PY
 }
 

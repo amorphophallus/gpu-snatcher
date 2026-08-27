@@ -16,7 +16,7 @@ Simple helper scripts for checking ZJU GPU servers, starting single-card or mult
   race during model startup.
 
 - `auto_train_single_card.ps1` / `auto_train_single_card.sh`
-  Find one free GPU, replace `training.gpu_id=` in `TRAIN_COMMAND`, start the command in a remote `tmux` session, and return structured status. Both the PowerShell and Bash scripts expose switchable `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, and optional `DATA_PATHS_OVERRIDE` globals for LMDB/Zarr dataset selection.
+  Find one free GPU, inject `CUDA_VISIBLE_DEVICES` into a one-rank `torchrun` command, start it in a remote `tmux` session, and return structured status. Single-card and multi-card jobs both use `src.train.bc_ddp`, so dataset, resume, checkpoint, and timing fixes share one implementation. Both the PowerShell and Bash scripts expose switchable `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, and optional `DATA_PATHS_OVERRIDE` globals for LMDB/Zarr dataset selection.
 
 - `auto_train_multi_card.ps1` / `auto_train_multi_card.sh`
   Find one server with enough free GPUs for a `torchrun` job, inject `CUDA_VISIBLE_DEVICES` and `--nproc_per_node=`, start the command in a remote `tmux` session, and return structured status. Both the PowerShell and Bash scripts expose switchable `DATA_STORAGE_FORMAT`, `DATA_LOAD_INTO_MEMORY`, and optional `DATA_PATHS_OVERRIDE` globals for LMDB/Zarr dataset selection.
@@ -28,7 +28,7 @@ Simple helper scripts for checking ZJU GPU servers, starting single-card or mult
   Linux-only helper for locating matching `outputs/{date}/{time}` runs for a `RUN_ID`, scanning them from newest to oldest for a checkpoint matching `CHECKPOINT_PATTERN`, requiring a `_{EPOCH}` suffix when `EPOCH` is set and rejecting epoch-suffixed filenames when `EPOCH` is empty, downloading the selected checkpoint into `LOCAL_PATH/checkpoints/bc/{TASK}/low/`, and launching `src.eval.evaluate_model` locally.
 
 - `auto_data_preparation.sh`
-  Linux-only helper for running rollout collection, batch processing pickles for multiple tasks into one merged LMDB, and uploading that single merged dataset directory to the matching path under `REMOTE_PATH` via `rsync` with progress display and resumable partial transfers.
+  Linux-only helper for running rollout collection, batch processing pickles for multiple tasks into one merged LMDB, and uploading that single merged dataset directory to the matching path under `REMOTE_PATH` via `rsync` with progress display and resumable partial transfers. Compression is owned by the rr converter; current rr versions create zstd level-1 frame payloads by default.
 
 - `auto_data_preparation_zarr.sh`
   Linux-only helper for running rollout collection, processing pickles task-by-task into Zarr datasets, and uploading each task dataset directory under `UPLOAD_RELATIVE_DIR` to the matching path under `REMOTE_PATH` via `rsync` with progress display and resumable partial transfers.
@@ -93,14 +93,14 @@ Before running `auto_train_multi_card`, edit the globals at the top of the scrip
 
 Before running `auto_eval.sh`, edit the globals at the top of the script such as `REMOTE_PATH`, `REMOTE_SSH_HOST` (optional, accepts `228` and expands it to `zju_4090_228`), `RUN_ID`, `LOCAL_PATH`, `TASK`, `PROJECT`, `EPOCH`, `N_ENVS`, `N_ROLLOUTS`, and `PARAMS`.
 
-Before running `auto_data_preparation.sh`, edit the globals at the top of the script such as `STEPS`, `TASKS`, `TASK_CKPT`, `TASK_EPISODE_LIMIT`, `LOCAL_PATH`, `REMOTE_PATH`, `REMOTE_SSH_HOST`, `UPLOAD_RELATIVE_DIR`, `PROCESS_SUFFIX`, and `PROCESS_OUTPUT_SUFFIX`. You can comment out lines in `STEPS` to skip `collect_data`, `process_pickles`, or `upload`, and comment out lines in `TASKS` to limit which tasks run. The script now processes all enabled tasks in one `process_pickles_to_lmdb` call and uploads the merged LMDB directory resolved from the sorted task group path under `UPLOAD_RELATIVE_DIR`. `REMOTE_PATH` is the root path, `UPLOAD_RELATIVE_DIR` controls the upload base directory, and `REMOTE_SSH_HOST` is required for the upload step.
+Before running `auto_data_preparation.sh`, edit the globals at the top of the script such as `STEPS`, `TASKS`, `TASK_CKPT`, `TASK_EPISODE_LIMIT`, `LOCAL_PATH`, `REMOTE_PATH`, `REMOTE_SSH_HOST`, `UPLOAD_RELATIVE_DIR`, `PROCESS_SUFFIX`, and `PROCESS_OUTPUT_SUFFIX`. You can comment out lines in `STEPS` to skip `collect_data`, `process_pickles`, or `upload`, and comment out lines in `TASKS` to limit which tasks run. The script now processes all enabled tasks in one `process_pickles_to_lmdb` call and uploads the merged LMDB directory resolved from the sorted task group path under `UPLOAD_RELATIVE_DIR`. It passes `--frame-compression zstd --frame-compression-level 1` by default; use the corresponding CLI options only for controlled overrides. `REMOTE_PATH` is the root path, `UPLOAD_RELATIVE_DIR` controls the upload base directory, and `REMOTE_SSH_HOST` is required for the upload step.
 
 Before running `auto_data_preparation_zarr.sh`, edit the globals at the top of the script such as `STEPS`, `TASKS`, `TASK_CKPT`, `LOCAL_PATH`, `REMOTE_PATH`, `REMOTE_SSH_HOST`, `UPLOAD_RELATIVE_DIR`, `PROCESS_SUFFIX`, and `PROCESS_OUTPUT_SUFFIX`. You can comment out lines in `STEPS` to skip `collect_data`, `process_pickles`, or `upload`, and comment out lines in `TASKS` to limit which tasks run. This script keeps the pre-LMDB flow: it processes each enabled task with `process_pickles` into its own Zarr dataset under `UPLOAD_RELATIVE_DIR/{task}` and uploads each task directory separately. `REMOTE_PATH` is the root path, `UPLOAD_RELATIVE_DIR` controls the upload base directory, and `REMOTE_SSH_HOST` is required for the upload step unless direct NAS sync is available.
 
 ## Example
 
 ```powershell
-$global:TRAIN_COMMAND = "python -m src.train.bc +experiment=rgbd/diff_unet training.gpu_id=0 wandb.project=test"
+$global:TRAIN_COMMAND = "torchrun --standalone --nproc_per_node=1 -m src.train.bc_ddp +experiment=rgbd/diff_unet data.ddp_shard_enabled=false wandb.project=test"
 .\auto_train_single_card.ps1
 ```
 
@@ -111,7 +111,7 @@ status: started
 server: zju_4090_230
 gpu_id: 1
 tmux_name: comet
-command_name: src.train.bc
+command_name: torchrun
 wandb_run_name: revived-totem-7
 ```
 
